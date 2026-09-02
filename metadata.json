@@ -1,0 +1,6 @@
+{
+  "name": "OmniSearch AI - Multi-LLM Hub & Deep Research",
+  "description": "All-in-One AI search aggregator and multi-model research hub integrating Google Gemini, GPT-4o, Claude 3.5, and Llama 3 with Fast & Deep Research modes, live web grounding, code analysis, and quota management.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
