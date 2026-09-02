@@ -55,7 +55,7 @@ export const SecretSellerModal: React.FC<SecretSellerModalProps> = ({
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [pinError, setPinError] = useState<string | null>(null);
 
-  // Active view tab: 'generator' | 'codes' | 'email_logs' | 'pin_settings'
+  // Active view tab: 'generator' | 'codes' | 'email_logs'
   const [activeTab, setActiveTab] = useState<'generator' | 'codes' | 'email_logs'>('generator');
 
   // Generator State

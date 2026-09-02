@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Search,
   Zap,
@@ -17,8 +17,9 @@ import {
   SlidersHorizontal,
   Check
 } from 'lucide-react';
-import { ResearchMode, Language } from '../types';
+import { ResearchMode, Language, ModelConfig } from '../types';
 import { AVAILABLE_MODELS } from '../data/models';
+import { getStoredModelsConfig } from '../services/modelConfigService';
 
 interface SearchInputProps {
   language: Language;
@@ -54,8 +55,17 @@ export const SearchInput: React.FC<SearchInputProps> = ({
     size: number;
   } | null>(null);
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
+  const [modelsConfig, setModelsConfig] = useState<ModelConfig[]>(() => getStoredModelsConfig());
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<any>(null);
+
+  useEffect(() => {
+    const handleUpdate = () => {
+      setModelsConfig(getStoredModelsConfig());
+    };
+    window.addEventListener('omnisearch:models_updated', handleUpdate);
+    return () => window.removeEventListener('omnisearch:models_updated', handleUpdate);
+  }, []);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -304,7 +314,7 @@ export const SearchInput: React.FC<SearchInputProps> = ({
                       {isAr ? 'النماذج المشاركة في المعالجة' : 'Active Multi-LLM Ensemble'}
                     </div>
                     <div className="space-y-1">
-                      {AVAILABLE_MODELS.map((model) => {
+                      {modelsConfig.filter((m) => m.isEnabled !== false).map((model) => {
                         const isSelected = selectedModels.includes(model.id);
                         return (
                           <button

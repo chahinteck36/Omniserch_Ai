@@ -13,15 +13,18 @@ import {
   ArrowLeft
 } from 'lucide-react';
 import { SearchResult, Language } from '../types';
+import { Mail, RefreshCw } from 'lucide-react';
 
 interface HistoryModalProps {
   isOpen: boolean;
   onClose: () => void;
   language: Language;
   history: SearchResult[];
+  userEmail?: string;
   onSelectResult: (result: SearchResult) => void;
   onClearHistory: () => void;
   onDeleteHistoryItem: (id: string) => void;
+  onSwitchEmail?: () => void;
 }
 
 export const HistoryModal: React.FC<HistoryModalProps> = ({
@@ -29,9 +32,11 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
   onClose,
   language,
   history,
+  userEmail,
   onSelectResult,
   onClearHistory,
   onDeleteHistoryItem,
+  onSwitchEmail,
 }) => {
   const isAr = language === 'ar';
   const [filter, setFilter] = useState<'all' | 'bookmarks'>('all');
@@ -88,6 +93,36 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
             >
               <X className="h-5 w-5" />
             </button>
+          </div>
+        </div>
+
+        {/* Email Context & Auto-Reset Notice */}
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-800 bg-slate-900/50 px-3.5 py-2 text-xs">
+          <div className="flex items-center gap-2">
+            <Mail className="h-3.5 w-3.5 text-indigo-400" />
+            <span className="text-slate-400">
+              {isAr ? 'الحساب الحالي:' : 'Current Session:'}
+            </span>
+            <span className="font-semibold text-slate-200">
+              {userEmail ? userEmail : isAr ? 'زائر غير مسجل' : 'Guest (No email registered)'}
+            </span>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-[11px] text-slate-400">
+              {isAr
+                ? 'يتم تصفير سجل البحث تلقائياً عند تغيير أو ربط بريد جديد.'
+                : 'History auto-resets when switching or registering a new email.'}
+            </span>
+            {onSwitchEmail && (
+              <button
+                type="button"
+                onClick={onSwitchEmail}
+                className="flex items-center gap-1 text-[11px] font-medium text-indigo-400 hover:text-indigo-300 hover:underline"
+              >
+                <RefreshCw className="h-3 w-3" />
+                <span>{isAr ? 'تغيير البريد' : 'Change'}</span>
+              </button>
+            )}
           </div>
         </div>
 

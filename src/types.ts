@@ -17,6 +17,14 @@ export interface AIModel {
   isPro?: boolean;
 }
 
+export interface ModelConfig extends AIModel {
+  isEnabled: boolean;
+  temperature?: number;
+  maxTokens?: number;
+  tierRequired?: 'all' | 'pro' | 'enterprise';
+  systemPromptAddition?: string;
+}
+
 export interface SearchSource {
   title: string;
   url: string;

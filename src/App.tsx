@@ -35,6 +35,7 @@ import {
   isEmailQuotaExhausted,
 } from './services/licenseService';
 import { checkAndTriggerExpirationNotice } from './services/emailService';
+import { getStoredModelsConfig, getOpenRouterApiKey } from './services/modelConfigService';
 
 export function App() {
   const [language, setLanguage] = useState<Language>('ar');
@@ -131,6 +132,20 @@ export function App() {
     return () => clearInterval(interval);
   }, [userPlan.tier, userPlan.expiresAt, userPlan.hasExpiryNoticeShown, isAr]);
 
+  // Sync selected models if control panel updates active models
+  useEffect(() => {
+    const handleModelsUpdate = () => {
+      const stored = getStoredModelsConfig();
+      const enabledIds = stored.filter((m) => m.isEnabled !== false).map((m) => m.id);
+      setSelectedModels((prev) => {
+        const filtered = prev.filter((id) => enabledIds.includes(id));
+        return filtered.length > 0 ? filtered : enabledIds.slice(0, 2);
+      });
+    };
+    window.addEventListener('omnisearch:models_updated', handleModelsUpdate);
+    return () => window.removeEventListener('omnisearch:models_updated', handleModelsUpdate);
+  }, []);
+
   const handleToggleModel = (modelId: string) => {
     setSelectedModels((prev) =>
       prev.includes(modelId)
@@ -189,6 +204,7 @@ export function App() {
           fileName: params.file?.name,
           fileType: params.file?.type,
           language,
+          openRouterKey: getOpenRouterApiKey() || undefined,
         }),
       });
 
@@ -242,7 +258,22 @@ export function App() {
   };
 
   const handleSaveEmail = (cleanEmail: string) => {
-    const usages = getEmailUsedSearches(cleanEmail);
+    const prevEmail = (userPlan.email || '').trim().toLowerCase();
+    const newEmail = cleanEmail.trim().toLowerCase();
+    const isNewEmail = !prevEmail || newEmail !== prevEmail;
+
+    // Reset and clear search history with every new email
+    if (isNewEmail) {
+      setHistory([]);
+      setCurrentResult(null);
+      try {
+        localStorage.removeItem('omnisearch_history');
+      } catch (e) {
+        console.error('Error clearing history:', e);
+      }
+    }
+
+    const usages = getEmailUsedSearches(newEmail);
     setUserPlan((prev) => ({
       ...prev,
       email: cleanEmail,
@@ -277,6 +308,21 @@ export function App() {
     expiresAt?: number,
     licenseKey?: string
   ) => {
+    const prevEmail = (userPlan.email || '').trim().toLowerCase();
+    const newEmail = (email || '').trim().toLowerCase();
+    const isNewEmail = newEmail && (!prevEmail || newEmail !== prevEmail);
+
+    // Reset and clear search history if upgraded with a new email
+    if (isNewEmail) {
+      setHistory([]);
+      setCurrentResult(null);
+      try {
+        localStorage.removeItem('omnisearch_history');
+      } catch (e) {
+        console.error('Error clearing history on upgrade:', e);
+      }
+    }
+
     setUserPlan({
       tier,
       name: tier === 'pro' ? 'Pro Plan' : tier === 'enterprise' ? 'Enterprise' : 'Free Plan',
@@ -498,19 +544,36 @@ export function App() {
         onClose={() => setIsHistoryOpen(false)}
         language={language}
         history={history}
+        userEmail={userPlan.email}
         onSelectResult={(res) => {
           setCurrentResult(res);
           setErrorMessage(null);
         }}
-        onClearHistory={() => setHistory([])}
+        onClearHistory={() => {
+          setHistory([]);
+          setCurrentResult(null);
+          try {
+            localStorage.removeItem('omnisearch_history');
+          } catch (e) {
+            console.error('Failed to clear search history:', e);
+          }
+        }}
         onDeleteHistoryItem={(id) => setHistory((prev) => prev.filter((i) => i.id !== id))}
+        onSwitchEmail={() => {
+          setIsHistoryOpen(false);
+          setIsEmailCaptureOpen(true);
+        }}
       />
 
-      {/* Settings Modal */}
+      {/* Settings / Keys & Models Control Panel Modal */}
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         language={language}
+        onOpenSellerPanel={() => {
+          setIsSettingsOpen(false);
+          setIsSellerModalOpen(true);
+        }}
       />
 
       {/* Secret Seller Code Generator Modal (Triggered by 5 Clicks on Logo) */}

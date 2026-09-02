@@ -192,6 +192,16 @@ export const EmailCaptureModal: React.FC<EmailCaptureModalProps> = ({
             </div>
           )}
 
+          {/* Auto-clear history reminder */}
+          <div className="flex items-center gap-2 rounded-xl bg-slate-900/40 border border-slate-800/80 px-3 py-2 text-[11px] text-slate-400">
+            <span className="h-1.5 w-1.5 rounded-full bg-indigo-400 shrink-0" />
+            <span>
+              {isAr
+                ? 'ملاحظة: عند حفظ بريد إلكتروني جديد، يتم تصفير سجل البحث لضمان خصوصية كل حساب واستقلالية أبحاثه.'
+                : 'Note: Registering a new email automatically clears the search history for privacy and a clean slate.'}
+            </span>
+          </div>
+
           {/* Action Buttons */}
           {isExhausted ? (
             <div className="space-y-2 pt-2">

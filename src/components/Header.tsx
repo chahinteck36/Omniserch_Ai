@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useRef } from 'react';
 import { 
   Sparkles, 
   History, 
@@ -54,27 +54,26 @@ export const Header: React.FC<HeaderProps> = ({
   }
 
   // Secret 5-clicks trigger on logo for Seller Generator
-  const [clickCount, setClickCount] = useState(0);
+  const clickCountRef = useRef(0);
   const clickTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const handleLogoClick = () => {
-    setClickCount((prev) => {
-      const next = prev + 1;
-      if (clickTimeoutRef.current) clearTimeout(clickTimeoutRef.current);
-      
-      if (next >= 5) {
-        if (onOpenSellerGenerator) {
-          onOpenSellerGenerator();
-        }
-        return 0;
+    if (clickTimeoutRef.current) {
+      clearTimeout(clickTimeoutRef.current);
+    }
+
+    clickCountRef.current += 1;
+
+    if (clickCountRef.current >= 5) {
+      clickCountRef.current = 0;
+      if (onOpenSellerGenerator) {
+        onOpenSellerGenerator();
       }
-
+    } else {
       clickTimeoutRef.current = setTimeout(() => {
-        setClickCount(0);
+        clickCountRef.current = 0;
       }, 2500);
-
-      return next;
-    });
+    }
 
     onResetSearch();
   };
@@ -173,11 +172,11 @@ export const Header: React.FC<HeaderProps> = ({
             <span>{isAr ? 'English' : 'عربي'}</span>
           </button>
 
-          {/* Settings Button */}
+          {/* Settings / Control Panel Button */}
           <button
             onClick={onOpenSettings}
             className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-800 bg-slate-900/60 text-slate-400 transition-colors hover:border-slate-700 hover:bg-slate-800 hover:text-white"
-            title={isAr ? 'إعدادات المنصة والمفاتيح' : 'Settings'}
+            title={isAr ? 'لوحة تحكم المفاتيح والنماذج' : 'Keys & Models Control Panel'}
           >
             <Settings className="h-4 w-4" />
           </button>

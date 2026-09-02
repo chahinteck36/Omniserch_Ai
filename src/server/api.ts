@@ -14,6 +14,44 @@ apiRouter.get('/health', (_req: Request, res: Response) => {
   });
 });
 
+apiRouter.post('/validate-openrouter', async (req: Request, res: Response) => {
+  try {
+    const { apiKey } = req.body;
+    if (!apiKey || typeof apiKey !== 'string' || !apiKey.trim()) {
+      res.status(400).json({ valid: false, message: 'API key is required' });
+      return;
+    }
+
+    const cleanKey = apiKey.trim();
+    const testRes = await fetch('https://openrouter.ai/api/v1/auth/key', {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${cleanKey}`,
+      },
+    });
+
+    if (testRes.ok) {
+      const info = await testRes.json();
+      res.json({
+        valid: true,
+        message: 'OpenRouter API key is verified and operational',
+        data: info?.data || info,
+      });
+    } else {
+      const errText = await testRes.text().catch(() => '');
+      res.status(testRes.status).json({
+        valid: false,
+        message: errText || `OpenRouter returned status ${testRes.status}`,
+      });
+    }
+  } catch (error: any) {
+    res.status(500).json({
+      valid: false,
+      message: error?.message || 'Error communicating with OpenRouter',
+    });
+  }
+});
+
 apiRouter.post('/search', async (req: Request, res: Response) => {
   try {
     const { query, mode = 'fast', models = [], fileContent, fileName, fileType, language = 'ar' } = req.body;
