@@ -22,8 +22,20 @@ import {
   Send,
   Calendar,
   History,
+  Settings,
+  KeyRound,
+  Activity,
+  Cpu,
+  SlidersHorizontal,
+  ShieldCheck,
+  Eye,
+  EyeOff,
+  RefreshCw,
+  AlertCircle,
+  ExternalLink,
+  Save,
 } from 'lucide-react';
-import { Language, ActivationCode, EmailNotificationLog } from '../types';
+import { Language, ActivationCode, EmailNotificationLog, ModelConfig } from '../types';
 import {
   getStoredCodes,
   generateLicenseCode,
@@ -37,6 +49,18 @@ import {
   sendSubscriptionEmailNotification,
   formatDurationText,
 } from '../services/emailService';
+import {
+  getOpenRouterApiKey,
+  saveOpenRouterApiKey,
+  removeOpenRouterApiKey,
+  getCustomEndpoint,
+  saveCustomEndpoint,
+  validateOpenRouterKey,
+  checkBackendEngineHealth,
+  getStoredModelsConfig,
+  saveModelsConfig,
+  resetModelsToDefault,
+} from '../services/modelConfigService';
 
 interface SecretSellerModalProps {
   isOpen: boolean;
@@ -55,8 +79,8 @@ export const SecretSellerModal: React.FC<SecretSellerModalProps> = ({
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [pinError, setPinError] = useState<string | null>(null);
 
-  // Active view tab: 'generator' | 'codes' | 'email_logs'
-  const [activeTab, setActiveTab] = useState<'generator' | 'codes' | 'email_logs'>('generator');
+  // Active view tab: 'generator' | 'codes' | 'email_logs' | 'settings'
+  const [activeTab, setActiveTab] = useState<'generator' | 'codes' | 'email_logs' | 'settings'>('generator');
 
   // Generator State
   const [tier, setTier] = useState<'pro' | 'enterprise'>('pro');
@@ -82,12 +106,119 @@ export const SecretSellerModal: React.FC<SecretSellerModalProps> = ({
   const [newPinInput, setNewPinInput] = useState('');
   const [pinChangeSuccess, setPinChangeSuccess] = useState(false);
 
+  // Settings & API Keys State (Gear controls inside Seller Panel)
+  const [openRouterKey, setOpenRouterKey] = useState('');
+  const [showKey, setShowKey] = useState(false);
+  const [customEndpoint, setCustomEndpoint] = useState('');
+  const [isTestingKey, setIsTestingKey] = useState(false);
+  const [keyValidationResult, setKeyValidationResult] = useState<{
+    valid: boolean;
+    message: string;
+    label?: string;
+  } | null>(null);
+  const [isKeysSaved, setIsKeysSaved] = useState(false);
+
+  // Backend Health
+  const [backendHealth, setBackendHealth] = useState<{
+    ok: boolean;
+    geminiKeyConfigured: boolean;
+    checking: boolean;
+  }>({ ok: true, geminiKeyConfigured: true, checking: false });
+
+  // Models State
+  const [modelsList, setModelsList] = useState<ModelConfig[]>([]);
+  const [modelsSaved, setModelsSaved] = useState(false);
+
   useEffect(() => {
     if (isOpen) {
       setCodesList(getStoredCodes());
       setEmailLogs(getEmailLogs());
+      setOpenRouterKey(getOpenRouterApiKey());
+      setCustomEndpoint(getCustomEndpoint());
+      setModelsList(getStoredModelsConfig());
+      setKeyValidationResult(null);
+
+      // Check backend status
+      setBackendHealth((prev) => ({ ...prev, checking: true }));
+      checkBackendEngineHealth().then((health) => {
+        setBackendHealth({
+          ok: health.ok,
+          geminiKeyConfigured: health.geminiKeyConfigured,
+          checking: false,
+        });
+      });
     }
   }, [isOpen, isAuthenticated, activeTab]);
+
+  const handleSaveKeys = () => {
+    saveOpenRouterApiKey(openRouterKey);
+    saveCustomEndpoint(customEndpoint);
+    setIsKeysSaved(true);
+    setTimeout(() => setIsKeysSaved(false), 2200);
+  };
+
+  const handleClearKey = () => {
+    removeOpenRouterApiKey();
+    setOpenRouterKey('');
+    setKeyValidationResult(null);
+    setIsKeysSaved(true);
+    setTimeout(() => setIsKeysSaved(false), 2000);
+  };
+
+  const handleTestKey = async () => {
+    if (!openRouterKey.trim()) {
+      setKeyValidationResult({
+        valid: false,
+        message: isAr ? 'يرجى إدخال المفتاح أولاً لفحصه' : 'Please enter key first',
+      });
+      return;
+    }
+
+    setIsTestingKey(true);
+    setKeyValidationResult(null);
+
+    const res = await validateOpenRouterKey(openRouterKey);
+    setIsTestingKey(false);
+    setKeyValidationResult({
+      valid: res.valid,
+      message: res.message || (res.valid ? (isAr ? 'المفتاح نشط ويعمل بشكل ممتاز!' : 'Key is active!') : (isAr ? 'المفتاح غير صالح' : 'Invalid Key')),
+      label: res.data?.label || res.data?.usage ? `Usage: $${res.data?.usage || 0}` : undefined,
+    });
+  };
+
+  const handleToggleModel = (modelId: string) => {
+    const updated = modelsList.map((m) =>
+      m.id === modelId ? { ...m, isEnabled: !m.isEnabled } : m
+    );
+    setModelsList(updated);
+  };
+
+  const handleTemperatureChange = (modelId: string, temp: number) => {
+    const updated = modelsList.map((m) =>
+      m.id === modelId ? { ...m, temperature: temp } : m
+    );
+    setModelsList(updated);
+  };
+
+  const handleTierRequiredChange = (modelId: string, required: 'all' | 'pro' | 'enterprise') => {
+    const updated = modelsList.map((m) =>
+      m.id === modelId ? { ...m, tierRequired: required } : m
+    );
+    setModelsList(updated);
+  };
+
+  const handleSaveModels = () => {
+    saveModelsConfig(modelsList);
+    setModelsSaved(true);
+    setTimeout(() => setModelsSaved(false), 2200);
+  };
+
+  const handleResetModels = () => {
+    const defaults = resetModelsToDefault();
+    setModelsList(defaults);
+    setModelsSaved(true);
+    setTimeout(() => setModelsSaved(false), 2200);
+  };
 
   if (!isOpen) return null;
 
@@ -355,6 +486,22 @@ export const SecretSellerModal: React.FC<SecretSellerModalProps> = ({
                   </span>
                 )}
               </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveTab('settings')}
+                className={`flex items-center gap-2 px-3 py-2 text-xs font-bold rounded-xl transition-colors ${
+                  activeTab === 'settings'
+                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-900'
+                }`}
+              >
+                <Settings className="h-3.5 w-3.5 text-amber-400" />
+                <span>{isAr ? 'الترس: إعدادات ومفاتيح الـ AI' : 'Settings & AI Models'}</span>
+                {openRouterKey && (
+                  <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                )}
+              </button>
             </div>
 
             {/* TAB 1: GENERATOR */}
@@ -404,8 +551,8 @@ export const SecretSellerModal: React.FC<SecretSellerModalProps> = ({
                         onChange={(e) => setTier(e.target.value as any)}
                         className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white focus:border-amber-500 focus:outline-none"
                       >
-                        <option value="pro">Pro ($19) - الباحث المحترف</option>
-                        <option value="enterprise">Enterprise ($49) - المؤسسات</option>
+                        <option value="pro">{isAr ? 'Pro ($7) - الباحث المحترف (مخفض)' : 'Pro ($7/mo) - Researcher (Discounted)'}</option>
+                        <option value="enterprise">{isAr ? 'Enterprise ($18) - المؤسسات (مخفض)' : 'Enterprise ($18/mo) - Teams (Discounted)'}</option>
                       </select>
                     </div>
 
@@ -724,6 +871,293 @@ export const SecretSellerModal: React.FC<SecretSellerModalProps> = ({
                       ))}
                     </div>
                   )}
+                </div>
+              </div>
+            )}
+
+            {/* TAB 4: GEAR / SETTINGS (API KEYS, OPENROUTER, AND MODEL CONFIGURATION) */}
+            {activeTab === 'settings' && (
+              <div className="space-y-6">
+                {/* Header Banner */}
+                <div className="rounded-2xl border border-amber-500/30 bg-amber-950/20 p-4">
+                  <div className="flex items-center gap-2 text-xs font-bold text-amber-300 mb-1">
+                    <SlidersHorizontal className="h-4 w-4" />
+                    <span>{isAr ? 'لوحة تحكم إعدادات الترس: المفاتيح والنماذج' : 'Settings & Model Controls'}</span>
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    {isAr
+                      ? 'تم تحويل الترس ومحتوياته بالكامل إلى هنا داخل لوحة تحكم البائع، لضبط مفاتيح OpenRouter، فحص محرك Gemini، وتفعيل النماذج ودرجات حرارتها.'
+                      : 'All Settings & API keys have been centralized inside the Seller Panel to manage OpenRouter keys, engine health, and model parameters.'}
+                  </p>
+                </div>
+
+                {/* Primary Engine Health Status */}
+                <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                        <Sparkles className="h-5 w-5" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-white">
+                          {isAr ? 'محرك Google Gemini السحابي (Server Engine)' : 'Primary Gemini Cloud Engine'}
+                        </div>
+                        <div className="text-[11px] text-slate-400">
+                          {isAr
+                            ? 'محرك الاستدلال والبحث المتصل بالويب والاستجابة الحية الفورية'
+                            : 'Integrated real-time grounding & reasoning engine'}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 px-3 py-1 text-[11px] font-bold text-emerald-300">
+                        <Activity className="h-3 w-3 animate-pulse text-emerald-400" />
+                        <span>{backendHealth.ok ? (isAr ? 'نشط ومتصل' : 'Online & Ready') : (isAr ? 'وضع التوليد المرن' : 'Resilient Fallback Mode')}</span>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* OpenRouter API Key Input */}
+                <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-5 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                      <KeyRound className="h-4 w-4 text-amber-400" />
+                      <span>{isAr ? 'مفتاح OpenRouter API المخصص' : 'Custom OpenRouter API Key'}</span>
+                    </label>
+                    <a
+                      href="https://openrouter.ai/keys"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-xs text-amber-400 hover:text-amber-300 font-medium"
+                    >
+                      <span>{isAr ? 'إنشاء مفتاح OpenRouter' : 'Get OpenRouter Key'}</span>
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  </div>
+
+                  <div className="relative">
+                    <input
+                      type={showKey ? 'text' : 'password'}
+                      value={openRouterKey}
+                      onChange={(e) => setOpenRouterKey(e.target.value)}
+                      placeholder="sk-or-v1-xxxxxxxxxxxxxxxx..."
+                      className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-xs sm:text-sm font-mono text-slate-200 placeholder-slate-600 focus:border-amber-500 focus:outline-none pr-10 rtl:pr-4 rtl:pl-10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowKey(!showKey)}
+                      className="absolute right-3 rtl:right-auto rtl:left-3 top-3 text-slate-500 hover:text-slate-300"
+                    >
+                      {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
+
+                  {/* Key Validation Feedback */}
+                  {keyValidationResult && (
+                    <div
+                      className={`flex items-center gap-2 rounded-xl p-3 text-xs font-medium ${
+                        keyValidationResult.valid
+                          ? 'border border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                          : 'border border-red-500/30 bg-red-500/10 text-red-300'
+                      }`}
+                    >
+                      {keyValidationResult.valid ? (
+                        <Check className="h-4 w-4 shrink-0 text-emerald-400" />
+                      ) : (
+                        <AlertCircle className="h-4 w-4 shrink-0 text-red-400" />
+                      )}
+                      <span>{keyValidationResult.message}</span>
+                      {keyValidationResult.label && (
+                        <span className="mr-auto rtl:mr-0 rtl:ml-auto text-[11px] opacity-80">
+                          {keyValidationResult.label}
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Custom Endpoint Option */}
+                  <div className="pt-1">
+                    <label className="text-[11px] font-semibold text-slate-400 block mb-1">
+                      {isAr ? 'نقطة النهاية المخصصة / Base URL (اختياري)' : 'Custom API Base URL (Optional)'}
+                    </label>
+                    <input
+                      type="text"
+                      value={customEndpoint}
+                      onChange={(e) => setCustomEndpoint(e.target.value)}
+                      placeholder="https://openrouter.ai/api/v1 (default)"
+                      className="w-full rounded-lg border border-slate-800 bg-slate-950/80 px-3 py-2 text-xs font-mono text-slate-300 placeholder-slate-700 focus:border-slate-600 focus:outline-none"
+                    />
+                  </div>
+
+                  {/* Action Buttons */}
+                  <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800/80">
+                    <button
+                      type="button"
+                      onClick={handleTestKey}
+                      disabled={isTestingKey || !openRouterKey.trim()}
+                      className="flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3.5 py-2 text-xs font-bold text-slate-200 hover:bg-slate-700 disabled:opacity-50 transition-colors cursor-pointer"
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${isTestingKey ? 'animate-spin text-amber-400' : ''}`} />
+                      <span>{isTestingKey ? (isAr ? 'جارِ التحقق...' : 'Testing...') : (isAr ? 'فحص الاتصال' : 'Test Key')}</span>
+                    </button>
+
+                    <div className="flex items-center gap-2">
+                      {openRouterKey && (
+                        <button
+                          type="button"
+                          onClick={handleClearKey}
+                          className="flex items-center gap-1 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs font-medium text-red-300 hover:bg-red-500/20 transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          <span>{isAr ? 'مسح' : 'Clear'}</span>
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={handleSaveKeys}
+                        className="flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-600 px-4 py-2 text-xs font-bold text-black shadow-lg shadow-amber-500/20 hover:scale-[1.01] transition-transform cursor-pointer"
+                      >
+                        {isKeysSaved ? <Check className="h-3.5 w-3.5 text-black" /> : <ShieldCheck className="h-3.5 w-3.5" />}
+                        <span>{isKeysSaved ? (isAr ? 'تم حفظ المفاتيح!' : 'Saved!') : (isAr ? 'حفظ المفاتيح' : 'Save Keys')}</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Model Catalog & Configuration */}
+                <div className="space-y-4 pt-2 border-t border-slate-800">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+                        <Cpu className="h-4 w-4 text-amber-400" />
+                        <span>{isAr ? 'كتالوج النماذج وتخصيص السلوك' : 'Model Catalog & Parameters'}</span>
+                      </h3>
+                      <p className="text-[11px] text-slate-400">
+                        {isAr
+                          ? 'تفعيل/تعطيل النماذج، تحديد فئة الاشتراك المطلوبة، وضبط حرارة التوليد (Temperature).'
+                          : 'Configure active models, required subscription tier, and temperature parameters.'}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleResetModels}
+                        className="flex items-center gap-1 rounded-xl border border-slate-800 bg-slate-900 px-3 py-1.5 text-xs text-slate-400 hover:text-white transition-colors cursor-pointer"
+                      >
+                        <RefreshCw className="h-3 w-3" />
+                        <span>{isAr ? 'استعادة الافتراضي' : 'Reset'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleSaveModels}
+                        className="flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-600 px-3.5 py-1.5 text-xs font-bold text-black shadow-md transition-all cursor-pointer"
+                      >
+                        {modelsSaved ? <Check className="h-3.5 w-3.5 text-black" /> : <Save className="h-3.5 w-3.5" />}
+                        <span>{modelsSaved ? (isAr ? 'تم الحفظ!' : 'Saved!') : (isAr ? 'حفظ النماذج' : 'Save Models')}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Model Items */}
+                  <div className="space-y-3">
+                    {modelsList.map((model) => (
+                      <div
+                        key={model.id}
+                        className={`rounded-2xl border p-4 transition-all ${
+                          model.isEnabled
+                            ? 'border-slate-700/80 bg-slate-900/60 shadow-lg'
+                            : 'border-slate-800/60 bg-slate-950/40 opacity-60'
+                        }`}
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div className="flex items-center gap-3">
+                            <div className={`h-3 w-3 rounded-full bg-gradient-to-r ${model.badgeColor}`} />
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-bold text-white">{model.name}</span>
+                                <span className="rounded-md bg-slate-800 px-2 py-0.5 text-[10px] font-semibold text-slate-300">
+                                  {model.provider}
+                                </span>
+                                {model.isPro && (
+                                  <span className="rounded-md bg-amber-500/20 border border-amber-500/30 px-1.5 py-0.5 text-[9px] font-bold text-amber-300">
+                                    PRO
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-xs text-slate-400 mt-0.5">
+                                {model.description[isAr ? 'ar' : 'en']}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Enable/Disable Toggle */}
+                          <div className="flex items-center gap-3">
+                            <span className="text-xs font-bold text-slate-300">
+                              {model.isEnabled ? (isAr ? 'مفعّل' : 'Enabled') : (isAr ? 'معطّل' : 'Disabled')}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleModel(model.id)}
+                              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer ${
+                                model.isEnabled ? 'bg-amber-500' : 'bg-slate-800'
+                              }`}
+                            >
+                              <span
+                                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                  model.isEnabled
+                                    ? isAr ? '-translate-x-6' : 'translate-x-6'
+                                    : isAr ? '-translate-x-1' : 'translate-x-1'
+                                }`}
+                              />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Controls (Temperature & Tier Required) */}
+                        {model.isEnabled && (
+                          <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4 border-t border-slate-800/80 pt-3">
+                            <div>
+                              <div className="flex justify-between text-xs font-semibold text-slate-300 mb-1">
+                                <span>{isAr ? 'درجة الحرارة / الإبداع (Temperature)' : 'Temperature'}</span>
+                                <span className="font-mono text-amber-400">{(model.temperature ?? 0.7).toFixed(2)}</span>
+                              </div>
+                              <input
+                                type="range"
+                                min="0"
+                                max="1"
+                                step="0.05"
+                                value={model.temperature ?? 0.7}
+                                onChange={(e) => handleTemperatureChange(model.id, parseFloat(e.target.value))}
+                                className="w-full accent-amber-500 cursor-pointer"
+                              />
+                              <div className="flex justify-between text-[10px] text-slate-500 mt-0.5">
+                                <span>{isAr ? '0.0 (دقيق وحتمي)' : '0.0 (Factual)'}</span>
+                                <span>{isAr ? '1.0 (إبداعي وتوليدي)' : '1.0 (Creative)'}</span>
+                              </div>
+                            </div>
+
+                            <div>
+                              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                                {isAr ? 'مستوى الاشتراك المطلوب للنموذج' : 'Required Plan Access'}
+                              </label>
+                              <select
+                                value={model.tierRequired || 'all'}
+                                onChange={(e) => handleTierRequiredChange(model.id, e.target.value as any)}
+                                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs text-slate-200 focus:outline-none"
+                              >
+                                <option value="all">{isAr ? 'متاح للجميع (المجاني والمدفوع)' : 'All Tiers (Free & Paid)'}</option>
+                                <option value="pro">{isAr ? 'يتطلب باقة Pro فما فوق' : 'Requires Pro Tier'}</option>
+                                <option value="enterprise">{isAr ? 'يتطلب باقة Enterprise فقط' : 'Requires Enterprise Only'}</option>
+                              </select>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             )}

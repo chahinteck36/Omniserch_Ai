@@ -69,7 +69,11 @@ export interface SearchResultPayload {
   };
 }
 
-// Helper to safely call Gemini with model fallback and error catching
+// Track search tool quota exhaustion to prevent wasteful 429 errors and slow retries
+// Default initialized with cooldown to avoid guaranteed 429 error on keys with zero search tool quota
+let googleSearchQuotaCooldownUntil = Date.now() + 6 * 60 * 60 * 1000;
+
+// Helper to safely call Gemini with verified fast models, search tool fallback, and error catching
 async function callGeminiSafe(
   prompt: string,
   options: {
@@ -79,40 +83,75 @@ async function callGeminiSafe(
   }
 ): Promise<{ text: string; rawResponse?: any; isFallback?: boolean }> {
   const ai = getGeminiClient();
-  const modelsToTry = ['gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.7-flash'];
+  // Verified fast and reliable models in priority order
+  const modelsToTry = ['gemini-flash-lite-latest', 'gemini-3.1-flash-lite', 'gemini-3.8-flash'];
 
+  // 1. If web search grounding was requested AND search tool quota is not currently in cooldown, try googleSearch
+  if (options.useSearch && Date.now() > googleSearchQuotaCooldownUntil) {
+    for (const model of modelsToTry) {
+      try {
+        const configWithSearch: any = {
+          tools: [{ googleSearch: {} }],
+        };
+        if (options.systemPrompt) {
+          configWithSearch.systemInstruction = options.systemPrompt;
+        }
+        if (options.jsonResponse) {
+          configWithSearch.responseMimeType = 'application/json';
+        }
+
+        const res = await Promise.race([
+          ai.models.generateContent({
+            model,
+            contents: prompt,
+            config: configWithSearch,
+          }),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('SearchToolTimeout')), 10000)
+          ),
+        ]);
+
+        if (res && res.text && res.text.trim()) {
+          return { text: res.text, rawResponse: res, isFallback: false };
+        }
+      } catch (searchErr: any) {
+        const msg = String(searchErr?.message || searchErr);
+        // If search tool hits quota limit (429), place into cooldown so subsequent queries do not delay or error
+        if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('quota')) {
+          googleSearchQuotaCooldownUntil = Date.now() + 2 * 60 * 60 * 1000; // 2 hour cooldown
+          break; // Immediately exit search tool loop and proceed to direct model calls
+        }
+      }
+    }
+  }
+
+  // 2. Direct model call (reliable, instant, no external search tool quota limitations)
   for (const model of modelsToTry) {
     try {
-      const config: any = {};
+      const directConfig: any = {};
       if (options.systemPrompt) {
-        config.systemInstruction = options.systemPrompt;
-      }
-      if (options.useSearch) {
-        config.tools = [{ googleSearch: {} }];
+        directConfig.systemInstruction = options.systemPrompt;
       }
       if (options.jsonResponse) {
-        config.responseMimeType = 'application/json';
+        directConfig.responseMimeType = 'application/json';
       }
 
-      const response = await ai.models.generateContent({
-        model,
-        contents: prompt,
-        config: Object.keys(config).length > 0 ? config : undefined,
-      });
+      const response = await Promise.race([
+        ai.models.generateContent({
+          model,
+          contents: prompt,
+          config: Object.keys(directConfig).length > 0 ? directConfig : undefined,
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('DirectModelTimeout')), 20000)
+        ),
+      ]);
 
-      if (response && response.text) {
+      if (response && response.text && response.text.trim()) {
         return { text: response.text, rawResponse: response, isFallback: false };
       }
-    } catch (err: any) {
-      const errMsg = err?.message || String(err);
-      const isQuotaError = errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('quota');
-      
-      console.warn(`[Gemini API] Note on model ${model}: ${isQuotaError ? 'Quota limit reached' : errMsg}`);
-      
-      if (isQuotaError) {
-        // Break early on quota exhaustion to immediately deliver synthesized response
-        break;
-      }
+    } catch {
+      // Quietly continue to next model candidate
     }
   }
 
@@ -134,13 +173,22 @@ export async function executeSearch(params: {
 
   if (mode === 'fast') {
     const systemPrompt = isArabic
-      ? `أنت محرك بحث ذكاء اصطناعي فائق السرعة والدقة (OmniSearch AI - Fast Research).
-قم بالإجابة على استفسار المستخدم بشكل مباشر وموجز وواضح، مع التركيز على الحقائق والبيانات الحديثة.
-أرفق مع الإجابة 3 إلى 5 نقاط رئيسية (Key Takeaways).
-قم بالرد بتنسيق Markdown أنيق ومرتب.`
-      : `You are OmniSearch AI Fast Research engine. Provide a concise, highly accurate, and direct answer based on the latest web knowledge.
-Include 3-5 high-impact bullet points / Key Takeaways.
-Format cleanly in Markdown.`;
+      ? `أنت المحرك الذكي الأساسي لمنصة "OmniSearch AI" (أومني سيرش) - منصة التجميع والبحث الفائق بالذكاء الاصطناعي.
+قواعد التشغيل وإطار المخرجات:
+1. الهوية والأسلوب: مهني، تقني، مباشر، وموجز، مع الحفاظ على أعلى كفاءة في استهلاك الرموز (Token Efficiency) دون حشو.
+2. إطار الإجابة الأساسي:
+   - **إجابة مباشرة (Direct Answer)**: قدّم الإجابة المباشرة أو الحل المحدد فوراً في الجملة الأولى.
+   - **تفصيل منظم (Structured Deep-Dive)**: استخدم نقاطاً محددة أو جداول مقارنة موجزة للحقائق والبيانات.
+   - **خطوات عملية قادمة (Actionable Next Steps)**: اختتم بنقطتين أو ثلاث خطوات أو مقترحات تالية واضحة للمستخدم.
+3. التنسيق: Markdown نقي، رصين وعصري باللغة العربية الفصحى السليمة.`
+      : `You are the Core AI Engine for "OmniSearch AI", an all-in-one AI aggregation platform.
+Operational Rules & Framework:
+1. Identity & Tone: Professional, highly concise, modern technical tone with strict token efficiency.
+2. Output Framework:
+   - Direct Answer: Deliver the core answer/solution in the very first sentence.
+   - Structured Deep-Dive: Bullet points, clean markdown, or comparison tables.
+   - Actionable Next Steps: 2-3 concrete, logical follow-up suggestions.
+3. Language: Clean, authoritative Modern Standard Arabic by default or English as requested.`;
 
     const promptText = `User Query: "${query}"${fileContent ? `\nAttached file (${fileName}):\n${fileContent.slice(0, 4000)}` : ''}`;
 
@@ -172,26 +220,22 @@ Format cleanly in Markdown.`;
 
   if (mode === 'deep') {
     const systemPrompt = isArabic
-      ? `أنت نظام بحث عميق ذكي متطور (Deep Research AI Agent).
-مهمتك إجراء بحث استقصائي شامل متعدد الأبعاد وتقديم تقرير مفصل ومنظم للغاية.
-الهيكل المطلوب للتقرير:
-1. الملخص التنفيذي (Executive Summary)
-2. تحليل شامل ومفصل مع سياق استقصائي ومقارن (Deep Dive Analysis)
-3. مقارنة البيانات أو الرؤى المتعددة والإيجابيات والسلبيات (Comparative Perspectives / Pros & Cons)
-4. إحصائيات وأرقام أو اتجاهات مستقبلية (Key Data & Trends)
-5. الاستنتاجات والتوصيات العملية (Conclusions & Actionable Takeaways)
-
-استخدم لغة احترافية، دقيقة، ومنسقة بشكل جميل مع عناوين ونقاط واضحة.`
-      : `You are an advanced Deep Research AI Agent.
-Conduct a comprehensive, multi-dimensional investigative research report on the user topic.
-Structure required:
-1. Executive Summary
-2. Comprehensive Deep Dive Analysis & Context
-3. Comparative Perspectives / Key Arguments / Pros & Cons
-4. Key Data, Statistics & Future Trends
-5. Strategic Conclusions & Actionable Takeaways
-
-Use professional formatting, clear markdown headers, and clean bullet lists.`;
+      ? `أنت المحرك الذكي المتقدم للبحث العميق لمنصة "OmniSearch AI" (أومني سيرش - Deep Research AI Agent).
+قواعد التشغيل وإطار المخرجات:
+1. الهوية والأسلوب: خبير استقصائي تقني رصين، عالي الدقة والكفاءة في استهلاك الرموز، بلا حشو لغوي.
+2. إطار التقرير الاستقصائي:
+   - **إجابة مباشرة / الملخص التنفيذي**: الإجابة الحاسمة والنتيجة الإجمالية مباشرة في الصدارة.
+   - **تحليل معمق ومقارن (Structured Deep-Dive)**: أبعاد الموضوع، إحصائيات، جداول مقارنة، ونقاط محددة.
+   - **خطوات وتوصيات عملية قادمة (Actionable Next Steps)**: توصيات استراتيجية وخطوات تنفيذية واضحة للمستخدم.
+3. التنسيق: Markdown احترافي، عناوين دقيقة، ولغة عربية فصحى عصرية وسليمة.`
+      : `You are the advanced Deep Research Engine for "OmniSearch AI".
+Operational Rules & Framework:
+1. Professional, highly structured, objective, and token-efficient.
+2. Output Framework:
+   - Direct Answer / Executive Summary in the very first block.
+   - Structured Deep-Dive: Comparative tables, key metrics, and bulleted takeaways.
+   - Actionable Next Steps: Strategic recommendations and implementation steps.
+3. Language: Clean Modern Standard Arabic by default or English as requested.`;
 
     const promptText = `Conduct deep research on: "${query}"${fileContent ? `\nReferenced Document/Code (${fileName}):\n${fileContent.slice(0, 6000)}` : ''}`;
 
@@ -345,37 +389,47 @@ Return ONLY a valid JSON object matching:
 
   // Mode: Code & Document Analysis
   const codePrompt = isArabic
-    ? `أنت خبير هندسة برمجيات وتحليل مستندات ذكي (OmniSearch Code & Doc Engine).
+    ? `أنت المحرك التقني والبرمجي لمنصة "OmniSearch AI" (أومني سيرش - Code & Technical Engine).
+قواعد العمل البرمجي:
+1. جودة الكود: كتابة كود نظيف، آمن، جاهز للإنتاج (Production-ready)، ومصحوب بتعليقات توضيحية واضحة.
+2. أمان المفاتيح والبنية التحتية: التزام تام بحماية مفاتيح API عبر خوادم خلفية (Backend proxies) وتجنب كشف أي أسرار في جانب العميل (Client-side).
+3. هيكل الاستجابة: إجابة مباشرة، فحص دقيق للثغرات، كود محسن كامل، وإرشادات تنفيذ عملية.
+
 حلل الكود أو المحتوى المرفق أو السؤال البرمجي التالي:
 السؤال: "${query}"
 اسم الملف المرفق: ${fileName || 'code_snippet'}
 المحتوى:
 ${fileContent || query}
 
-قم بإرجاع JSON بالتنسيق التالي:
+قم بإرجاع JSON بالتنسيق التالي حصراً:
 {
-  "overview": "نظرة عامة شاملة حول الكود أو الوثيقة وما تفعله",
-  "bugsOrIssues": ["ملاحظة 1 حول الثغرات أو الأخطاء", "ملاحظة 2"],
+  "overview": "إجابة مباشرة ونظرة عامة تقنية دقيقة وموجزة",
+  "bugsOrIssues": ["ملاحظة حول الثغرات أو الأخطاء أو الأمان 1", "ملاحظة 2"],
   "improvements": ["اقتراح تحسين الأداء 1", "اقتراح تنظيف الكود 2"],
   "language": "python / typescript / javascript / etc",
-  "optimizedCode": "الكود المحسن والمصحح بالكامل مع تعليقات توضيحية",
-  "explanation": "شرح التعديلات والحلول"
+  "optimizedCode": "الكود المحسن والآمن والكامل مع تعليقات توضيحية",
+  "explanation": "شرح التعديلات والحلول والخطوات العملية القادمة"
 }`
-    : `You are an elite Software Architect & Code Auditor (OmniSearch Code & Doc Engine).
-Analyze the following code / document request:
+    : `You are the Core Technical & Code Engine for "OmniSearch AI".
+Rules:
+1. Deliver clean, secure, production-ready, and properly commented code.
+2. Maintain strict security standards (backend proxy architecture for API keys like Gemini/OpenRouter/Groq, zero client-side exposure).
+3. Output direct answers, pinpoint bugs/security flaws, provide optimized code, and detail actionable steps.
+
+Analyze the following query / code:
 Query: "${query}"
 File: ${fileName || 'code_snippet'}
 Content:
 ${fileContent || query}
 
-Return a valid JSON object matching:
+Return ONLY a valid JSON object matching:
 {
-  "overview": "Clear architectural summary of the code/document",
+  "overview": "Direct answer and clear architectural overview",
   "bugsOrIssues": ["Identified bug, edge case, or security vulnerability 1", "issue 2"],
-  "improvements": ["Refactoring / performance / readability suggestion 1", "suggestion 2"],
+  "improvements": ["Performance / refactoring / security suggestion 1", "suggestion 2"],
   "language": "typescript / python / etc",
-  "optimizedCode": "The complete rewritten, bug-free, and optimized code with inline comments",
-  "explanation": "Detailed explanation of what was fixed and why"
+  "optimizedCode": "Complete, production-ready, bug-free, and secure code with comments",
+  "explanation": "Explanation of fixes and actionable next steps"
 }`;
 
   const { text, isFallback } = await callGeminiSafe(codePrompt, {

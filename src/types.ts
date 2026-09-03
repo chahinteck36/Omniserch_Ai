@@ -119,6 +119,8 @@ export interface PricingPlan {
   id: 'free' | 'pro' | 'enterprise';
   name: { ar: string; en: string };
   price: string;
+  originalPrice?: string;
+  discountBadge?: { ar: string; en: string };
   period: { ar: string; en: string };
   description: { ar: string; en: string };
   popular?: boolean;

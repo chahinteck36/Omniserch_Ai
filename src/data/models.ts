@@ -100,7 +100,9 @@ export const PRICING_PLANS: PricingPlan[] = [
   {
     id: 'pro',
     name: { ar: 'الباحث المحترف Pro', en: 'Pro Researcher' },
-    price: '$19',
+    price: '$7',
+    originalPrice: '$19',
+    discountBadge: { ar: 'تخفيض 63%', en: '63% OFF' },
     period: { ar: 'شهرياً', en: 'per month' },
     popular: true,
     description: {
@@ -132,7 +134,9 @@ export const PRICING_PLANS: PricingPlan[] = [
   {
     id: 'enterprise',
     name: { ar: 'المؤسسات والفرق', en: 'Enterprise & Teams' },
-    price: '$49',
+    price: '$18',
+    originalPrice: '$49',
+    discountBadge: { ar: 'تخفيض 63%', en: '63% OFF' },
     period: { ar: 'شهرياً / عضو', en: 'per user / mo' },
     description: {
       ar: 'أعلى مستوى أمان وربط مخصص لفرق العمل والشركات',

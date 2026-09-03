@@ -89,16 +89,18 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
     ? {
         nameAr: 'الباحث المحترف Pro',
         nameEn: 'Pro Researcher Plan',
-        priceUSD: 19,
-        priceDisplay: '$19 / شهرياً',
-        priceDisplayEn: '$19 / month',
+        priceUSD: 7,
+        originalPriceUSD: 19,
+        priceDisplay: '$7 / شهرياً (خصم 63%)',
+        priceDisplayEn: '$7 / month (63% OFF)',
       }
     : {
         nameAr: 'باقة المؤسسات والفرق Enterprise',
         nameEn: 'Enterprise & Teams Plan',
-        priceUSD: 49,
-        priceDisplay: '$49 / شهرياً',
-        priceDisplayEn: '$49 / month',
+        priceUSD: 18,
+        originalPriceUSD: 49,
+        priceDisplay: '$18 / شهرياً (خصم 63%)',
+        priceDisplayEn: '$18 / month (63% OFF)',
       };
 
   const handleCopyPaypal = () => {
@@ -269,11 +271,19 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
             </div>
           </div>
           <div className="text-right sm:text-left">
-            <div className="text-lg font-black text-white">
-              {isAr ? planInfo.priceDisplay : planInfo.priceDisplayEn}
+            <div className="flex items-baseline justify-end sm:justify-start gap-1.5">
+              <span className="text-lg font-black text-white">
+                ${planInfo.priceUSD}
+              </span>
+              <span className="text-xs text-slate-500 line-through font-semibold">
+                ${planInfo.originalPriceUSD}
+              </span>
+              <span className="text-xs text-slate-400">
+                {isAr ? '/ شهر' : '/ mo'}
+              </span>
             </div>
             <div className="text-[10px] text-emerald-400 font-semibold">
-              {isAr ? 'تفعيل فوري ومضمون' : 'Instant Activation'}
+              {isAr ? '🔥 تم تطبيق التخفيض 63% وتفعيل فوري' : '🔥 63% Discount Applied & Instant Activation'}
             </div>
           </div>
         </div>

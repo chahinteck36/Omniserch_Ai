@@ -17,7 +17,6 @@ import { BattleResultView } from './components/BattleResultView';
 import { CodeResultView } from './components/CodeResultView';
 import { PricingModal } from './components/PricingModal';
 import { HistoryModal } from './components/HistoryModal';
-import { SettingsModal } from './components/SettingsModal';
 import { SecretSellerModal } from './components/SecretSellerModal';
 import { EmailCaptureModal } from './components/EmailCaptureModal';
 import { ExpiryNoticeModal } from './components/ExpiryNoticeModal';
@@ -35,7 +34,8 @@ import {
   isEmailQuotaExhausted,
 } from './services/licenseService';
 import { checkAndTriggerExpirationNotice } from './services/emailService';
-import { getStoredModelsConfig, getOpenRouterApiKey } from './services/modelConfigService';
+import { getStoredModelsConfig } from './services/modelConfigService';
+import { executeUnifiedSearch } from './services/searchExecutionService';
 
 export function App() {
   const [language, setLanguage] = useState<Language>('ar');
@@ -95,7 +95,6 @@ export function App() {
   // Modals state
   const [isPricingOpen, setIsPricingOpen] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSellerModalOpen, setIsSellerModalOpen] = useState(false);
   const [isEmailCaptureOpen, setIsEmailCaptureOpen] = useState(false);
   const [isExpiryNoticeOpen, setIsExpiryNoticeOpen] = useState(false);
@@ -192,28 +191,15 @@ export function App() {
     }
 
     setIsLoading(true);
+    setErrorMessage(null);
     try {
-      const response = await fetch('/api/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          query: params.query,
-          mode: params.mode,
-          models: params.selectedModels,
-          fileContent: params.file?.content,
-          fileName: params.file?.name,
-          fileType: params.file?.type,
-          language,
-          openRouterKey: getOpenRouterApiKey() || undefined,
-        }),
+      const data = await executeUnifiedSearch({
+        query: params.query,
+        mode: params.mode,
+        selectedModels: params.selectedModels,
+        file: params.file,
+        language,
       });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || 'Failed to process research query');
-      }
-
-      const data = await response.json();
 
       const newResult: SearchResult = {
         id: `search_${Date.now()}`,
@@ -250,7 +236,7 @@ export function App() {
       setErrorMessage(
         isAr 
           ? 'حدث تأخير في الاتصال بالخادم. يرجى الضغط على زر إعادة المحاولة.'
-          : 'Network or processing latency detected. Please click Retry.'
+          : 'Server delay or processing latency detected. Please click Retry.'
       );
     } finally {
       setIsLoading(false);
@@ -346,7 +332,7 @@ export function App() {
         userPlan={userPlan}
         onOpenPricing={() => setIsPricingOpen(true)}
         onOpenHistory={() => setIsHistoryOpen(true)}
-        onOpenSettings={() => setIsSettingsOpen(true)}
+        onOpenSettings={() => setIsSellerModalOpen(true)}
         onOpenSellerGenerator={() => setIsSellerModalOpen(true)}
         onResetSearch={() => {
           setCurrentResult(null);
@@ -565,18 +551,7 @@ export function App() {
         }}
       />
 
-      {/* Settings / Keys & Models Control Panel Modal */}
-      <SettingsModal
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
-        language={language}
-        onOpenSellerPanel={() => {
-          setIsSettingsOpen(false);
-          setIsSellerModalOpen(true);
-        }}
-      />
-
-      {/* Secret Seller Code Generator Modal (Triggered by 5 Clicks on Logo) */}
+      {/* Secret Seller Code Generator Modal (Triggered by 5 Clicks on Logo) with Gear/Settings inside */}
       <SecretSellerModal
         isOpen={isSellerModalOpen}
         onClose={() => setIsSellerModalOpen(false)}

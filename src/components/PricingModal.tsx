@@ -133,11 +133,24 @@ export const PricingModal: React.FC<PricingModalProps> = ({
                       {isAr ? plan.description.ar : plan.description.en}
                     </p>
 
-                    <div className="mb-6 flex items-baseline gap-1">
-                      <span className="text-3xl font-black text-white">{plan.price}</span>
-                      <span className="text-xs text-slate-400">
-                        / {isAr ? plan.period.ar : plan.period.en}
-                      </span>
+                    <div className="mb-6">
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-3xl font-black text-white">{plan.price}</span>
+                        {plan.originalPrice && (
+                          <span className="text-sm font-semibold text-slate-500 line-through">
+                            {plan.originalPrice}
+                          </span>
+                        )}
+                        <span className="text-xs text-slate-400">
+                          / {isAr ? plan.period.ar : plan.period.en}
+                        </span>
+                      </div>
+                      {plan.discountBadge && (
+                        <div className="mt-1.5 inline-flex items-center gap-1 rounded-md bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 text-[10px] font-bold text-emerald-400">
+                          <span>🔥</span>
+                          <span>{isAr ? plan.discountBadge.ar : plan.discountBadge.en}</span>
+                        </div>
+                      )}
                     </div>
 
                     <ul className="space-y-2.5 border-t border-slate-800/80 pt-4 mb-6">

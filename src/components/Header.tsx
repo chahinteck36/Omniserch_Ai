@@ -2,7 +2,6 @@ import React, { useRef } from 'react';
 import { 
   Sparkles, 
   History, 
-  Settings, 
   Crown, 
   Globe, 
   Flame, 
@@ -19,7 +18,7 @@ interface HeaderProps {
   userPlan: UserPlan;
   onOpenPricing: () => void;
   onOpenHistory: () => void;
-  onOpenSettings: () => void;
+  onOpenSettings?: () => void;
   onResetSearch: () => void;
   onOpenSellerGenerator?: () => void;
   historyCount: number;
@@ -170,15 +169,6 @@ export const Header: React.FC<HeaderProps> = ({
           >
             <Globe className="h-3.5 w-3.5 text-slate-400" />
             <span>{isAr ? 'English' : 'عربي'}</span>
-          </button>
-
-          {/* Settings / Control Panel Button */}
-          <button
-            onClick={onOpenSettings}
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-800 bg-slate-900/60 text-slate-400 transition-colors hover:border-slate-700 hover:bg-slate-800 hover:text-white"
-            title={isAr ? 'لوحة تحكم المفاتيح والنماذج' : 'Keys & Models Control Panel'}
-          >
-            <Settings className="h-4 w-4" />
           </button>
         </div>
       </div>
