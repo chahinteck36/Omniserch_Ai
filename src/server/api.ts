@@ -80,3 +80,42 @@ apiRouter.post('/search', async (req: Request, res: Response) => {
     });
   }
 });
+
+apiRouter.post('/chat', async (req: Request, res: Response) => {
+  try {
+    const apiKey = process.env.OPENROUTER_API_KEY || (req.headers['x-openrouter-key'] as string);
+    if (!apiKey) {
+      res.status(500).json({ error: 'مفتاح OPENROUTER_API_KEY غير محدد في إعدادات البيئة' });
+      return;
+    }
+
+    const { messages, model = 'meta-llama/llama-3.1-8b-instruct:free' } = req.body;
+
+    if (!messages || !Array.isArray(messages)) {
+      res.status(400).json({ error: 'تنسيق الرسائل غير صحيح' });
+      return;
+    }
+
+    const openRouterResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'HTTP-Referer': req.headers.origin || 'https://pages.dev',
+        'X-Title': 'Cloudflare Pages App',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: model,
+        messages: messages,
+      }),
+    });
+
+    const data = await openRouterResponse.json();
+    res.status(openRouterResponse.status).json(data);
+  } catch (error: any) {
+    res.status(500).json({
+      error: 'حدث خطأ في الخادم الداخلي',
+      details: error.message,
+    });
+  }
+});
