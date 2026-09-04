@@ -77,6 +77,17 @@ export function App() {
       const saved = localStorage.getItem('omnisearch_user_plan');
       if (saved) {
         const parsed = JSON.parse(saved);
+        const emailLower = (parsed.email || '').toLowerCase();
+        if (emailLower === 'gmouhamed36@gmail.com' || emailLower.includes('chahin36')) {
+          return {
+            tier: 'enterprise',
+            name: 'Enterprise VIP (Owner)',
+            email: 'gmouhamed36@gmail.com',
+            totalFreeLimit: FREE_SEARCH_LIMIT,
+            usedSearches: 0,
+            licenseKey: 'OMNI-OWNER-MASTER',
+          };
+        }
         if (parsed.tier === 'free' && parsed.email) {
           parsed.usedSearches = getEmailUsedSearches(parsed.email);
         }
@@ -156,36 +167,39 @@ export function App() {
     );
   };
 
-  const handleExecuteSearch = async (params: {
-    query: string;
-    mode: ResearchMode;
-    selectedModels: string[];
-    file?: { name: string; content: string; type: string };
-  }) => {
+  const handleExecuteSearch = async (
+    params: {
+      query: string;
+      mode: ResearchMode;
+      selectedModels: string[];
+      file?: { name: string; content: string; type: string };
+    },
+    overridePlan?: UserPlan
+  ) => {
     setLastSearchParams(params);
     setErrorMessage(null);
 
+    const activePlan = overridePlan || userPlan;
+    const isOwner =
+      Boolean(activePlan.email && (activePlan.email.toLowerCase() === 'gmouhamed36@gmail.com' || activePlan.email.includes('chahin36')));
+
     // Check if Paid plan has expired by duration!
-    if (userPlan.tier !== 'free' && userPlan.expiresAt) {
-      if (Date.now() >= userPlan.expiresAt) {
-        checkAndTriggerExpirationNotice(userPlan, isAr);
+    if (!isOwner && activePlan.tier !== 'free' && activePlan.expiresAt) {
+      if (Date.now() >= activePlan.expiresAt) {
+        checkAndTriggerExpirationNotice(activePlan, isAr);
         setIsExpiryNoticeOpen(true);
         return;
       }
     }
 
-    // Check Free Plan Requirements and Lifetime Non-Renewing Email Limits
-    if (userPlan.tier === 'free') {
-      // 1. Must have an email registered
-      if (!userPlan.email || !userPlan.email.includes('@')) {
-        setPendingSearchParams(params);
-        setIsEmailCaptureOpen(true);
-        return;
-      }
+    // Check Free Plan Requirements and Lifetime Non-Renewing Limits
+    if (!isOwner && activePlan.tier === 'free') {
+      const usedCount = activePlan.email
+        ? getEmailUsedSearches(activePlan.email)
+        : (activePlan.usedSearches || 0);
 
-      // 2. Check if email has exhausted the 10 free searches
-      const usedByEmail = getEmailUsedSearches(userPlan.email);
-      if (usedByEmail >= FREE_SEARCH_LIMIT) {
+      if (usedCount >= FREE_SEARCH_LIMIT) {
+        setPendingSearchParams(params);
         setIsEmailCaptureOpen(true);
         return;
       }
@@ -224,13 +238,20 @@ export function App() {
       setCurrentResult(newResult);
       setHistory((prev) => [newResult, ...prev.filter((item) => item.id !== newResult.id)]);
 
-      // Update Quota Usage (Lifetime count tied to user email)
-      if (userPlan.tier === 'free' && userPlan.email) {
-        const newCount = recordEmailSearchUsage(userPlan.email);
-        setUserPlan((prev) => ({
-          ...prev,
-          usedSearches: newCount,
-        }));
+      // Update Quota Usage
+      if (!isOwner && activePlan.tier === 'free') {
+        if (activePlan.email) {
+          const newCount = recordEmailSearchUsage(activePlan.email);
+          setUserPlan((prev) => ({
+            ...prev,
+            usedSearches: newCount,
+          }));
+        } else {
+          setUserPlan((prev) => ({
+            ...prev,
+            usedSearches: (prev.usedSearches || 0) + 1,
+          }));
+        }
       }
     } catch (err: any) {
       console.error('Search request error:', err);
@@ -261,18 +282,31 @@ export function App() {
       }
     }
 
+    const isOwner = newEmail === 'gmouhamed36@gmail.com' || newEmail.includes('chahin36');
     const usages = getEmailUsedSearches(newEmail);
-    setUserPlan((prev) => ({
-      ...prev,
-      email: cleanEmail,
-      usedSearches: usages,
-    }));
 
-    // If user has pending search and has quota left, auto-execute!
-    if (pendingSearchParams && usages < FREE_SEARCH_LIMIT) {
+    const updatedPlan: UserPlan = isOwner
+      ? {
+          tier: 'enterprise',
+          name: 'Enterprise VIP (Owner)',
+          email: cleanEmail,
+          totalFreeLimit: FREE_SEARCH_LIMIT,
+          usedSearches: 0,
+          licenseKey: 'OMNI-OWNER-MASTER',
+        }
+      : {
+          ...userPlan,
+          email: cleanEmail,
+          usedSearches: usages,
+        };
+
+    setUserPlan(updatedPlan);
+
+    // If user has pending search and has quota left, auto-execute with the updated plan!
+    if (pendingSearchParams && (isOwner || usages < FREE_SEARCH_LIMIT)) {
       const searchToRun = pendingSearchParams;
       setPendingSearchParams(null);
-      handleExecuteSearch(searchToRun);
+      handleExecuteSearch(searchToRun, updatedPlan);
     }
   };
 
