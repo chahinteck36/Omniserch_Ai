@@ -112,7 +112,7 @@ function extractJsonSafe<T = any>(rawText: string): T | null {
 }
 
 // Track search tool quota exhaustion to prevent wasteful 429 errors and slow retries
-let googleSearchQuotaCooldownUntil = Date.now() + 6 * 60 * 60 * 1000;
+let googleSearchQuotaCooldownUntil = Date.now() + 365 * 24 * 60 * 60 * 1000;
 
 // Helper to safely call Gemini with verified fast models, search tool fallback, and error catching
 async function callGeminiSafe(
@@ -124,8 +124,8 @@ async function callGeminiSafe(
   } = {}
 ): Promise<{ text: string; rawResponse?: any; isFallback?: boolean }> {
   const ai = getGeminiClient();
-  // Verified fast and reliable models in priority order
-  const modelsToTry = ['gemini-flash-lite-latest', 'gemini-3.1-flash-lite', 'gemini-3.8-flash'];
+  // Verified fast and reliable models in priority order: gemini-3.1-flash-lite is the fastest and most stable
+  const modelsToTry = ['gemini-3.1-flash-lite', 'gemini-flash-lite-latest'];
 
   // 1. If web search grounding was requested AND search tool quota is not currently in cooldown, try googleSearch
   if (options.useSearch && Date.now() > googleSearchQuotaCooldownUntil) {
@@ -148,7 +148,7 @@ async function callGeminiSafe(
             config: configWithSearch,
           }),
           new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('SearchToolTimeout')), 8000)
+            setTimeout(() => reject(new Error('SearchToolTimeout')), 6000)
           ),
         ]);
 
@@ -158,7 +158,7 @@ async function callGeminiSafe(
       } catch (searchErr: any) {
         const msg = String(searchErr?.message || searchErr);
         if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('quota')) {
-          googleSearchQuotaCooldownUntil = Date.now() + 2 * 60 * 60 * 1000;
+          googleSearchQuotaCooldownUntil = Date.now() + 24 * 60 * 60 * 1000;
           break;
         }
       }
@@ -183,7 +183,7 @@ async function callGeminiSafe(
           config: Object.keys(directConfig).length > 0 ? directConfig : undefined,
         }),
         new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('DirectModelTimeout')), 15000)
+          setTimeout(() => reject(new Error('DirectModelTimeout')), 9000)
         ),
       ]);
 

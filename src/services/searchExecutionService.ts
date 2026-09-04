@@ -65,78 +65,89 @@ export async function executeUnifiedSearch(
   const openRouterKey = getOpenRouterApiKey();
   const customEndpoint = getCustomEndpoint();
 
-  // Tier 1: Try server endpoint
-  try {
-    const controller = new AbortController();
-    // 45-second timeout for deep research and multi-model synthesis
-    const timeoutId = setTimeout(() => controller.abort(), 45000);
-
-    const response = await fetch('/api/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        query: params.query,
-        mode: params.mode,
-        models: params.selectedModels,
-        fileContent: params.file?.content,
-        fileName: params.file?.name,
-        fileType: params.file?.type,
-        language: params.language,
-        openRouterKey: openRouterKey || undefined,
-      }),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
-
-    if (response.ok) {
-      const contentType = response.headers.get('content-type') || '';
-      if (contentType.includes('application/json')) {
-        const data = await response.json();
-        return {
-          ...data,
-          searchMetadata: {
-            ...data.searchMetadata,
-            serverLive: true,
-            processingTimeMs: Date.now() - startTime,
-          },
-        };
+  // Tier 1: Try server endpoint (with transparent 1-time retry for transient network hiccups)
+  let lastError: any = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      if (attempt > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 600));
       }
-    } else {
-      const errJson = await response.json().catch(() => null);
-      throw new Error(errJson?.error || `Server responded with status ${response.status}`);
-    }
-  } catch (err: any) {
-    console.warn('[SearchService] Primary server call failed, checking alternative tiers...', err?.message || err);
 
-    // Tier 2: Try Direct Client-side OpenRouter if an OpenRouter key was provided
-    if (openRouterKey && openRouterKey.trim()) {
-      try {
-        const orResult = await callOpenRouterDirectly(params, openRouterKey, customEndpoint);
-        if (orResult) {
+      const controller = new AbortController();
+      // 35-second timeout for deep research and multi-model synthesis
+      const timeoutId = setTimeout(() => controller.abort(), 35000);
+
+      const response = await fetch('/api/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: params.query,
+          mode: params.mode,
+          models: params.selectedModels,
+          fileContent: params.file?.content,
+          fileName: params.file?.name,
+          fileType: params.file?.type,
+          language: params.language,
+          openRouterKey: openRouterKey || undefined,
+        }),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          const data = await response.json();
           return {
-            ...orResult,
+            ...data,
             searchMetadata: {
-              totalSources: orResult.sources?.length || 0,
+              ...data.searchMetadata,
+              serverLive: true,
               processingTimeMs: Date.now() - startTime,
-              fallbackUsed: false,
-              serverLive: false,
             },
           };
         }
-      } catch (orErr) {
-        console.warn('[SearchService] OpenRouter direct call failed:', orErr);
+      } else {
+        const errJson = await response.json().catch(() => null);
+        throw new Error(errJson?.error || `Server responded with status ${response.status}`);
       }
+    } catch (err: any) {
+      lastError = err;
+      console.warn(`[SearchService] Server call attempt ${attempt + 1} failed:`, err?.message || err);
+      if (err?.name === 'AbortError' && attempt > 0) break;
     }
-
-    // Rethrow error so user sees real status and Retry button rather than confusing canned responses
-    throw new Error(
-      err?.message || (isAr ? 'حدث تأخير في الاتصال بالخادم. يرجى الضغط على زر إعادة المحاولة.' : 'Server connection delay. Please click Retry.')
-    );
   }
 
-  // Tier 3: Fallback if needed
-  return generateClientSynthesizedResult(params, startTime);
+  // Tier 2: Try Direct Client-side OpenRouter if an OpenRouter key was provided
+  if (openRouterKey && openRouterKey.trim()) {
+    try {
+      const orResult = await callOpenRouterDirectly(params, openRouterKey, customEndpoint);
+      if (orResult) {
+        return {
+          ...orResult,
+          searchMetadata: {
+            totalSources: orResult.sources?.length || 0,
+            processingTimeMs: Date.now() - startTime,
+            fallbackUsed: false,
+            serverLive: false,
+          },
+        };
+      }
+    } catch (orErr) {
+      console.warn('[SearchService] OpenRouter direct call failed:', orErr);
+    }
+  }
+
+  // Rethrow clean readable error so user sees real actionable status and can Retry
+  const errDesc = lastError?.message || '';
+  const finalMsg = isAr
+    ? (errDesc.includes('Failed to fetch') || errDesc.includes('NetworkError') || errDesc.includes('status')
+        ? 'تعذر الاتصال بالخادم حالياً. يرجى الضغط على زر إعادة المحاولة.'
+        : (errDesc || 'تعذر إكمال معالجة البحث، يرجى إعادة المحاولة.'))
+    : (errDesc || 'Server connection delay. Please click Retry.');
+
+  throw new Error(finalMsg);
 }
 
 /**

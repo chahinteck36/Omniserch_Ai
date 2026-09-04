@@ -7,7 +7,8 @@ import {
   AlertTriangle,
   RotateCcw,
   Key,
-  Crown
+  Crown,
+  X
 } from 'lucide-react';
 import { Header } from './components/Header';
 import { SearchInput } from './components/SearchInput';
@@ -233,10 +234,11 @@ export function App() {
       }
     } catch (err: any) {
       console.error('Search request error:', err);
+      const customMsg = err?.message;
       setErrorMessage(
-        isAr 
-          ? 'حدث تأخير في الاتصال بالخادم. يرجى الضغط على زر إعادة المحاولة.'
-          : 'Server delay or processing latency detected. Please click Retry.'
+        customMsg || (isAr 
+          ? 'تعذر إكمال البحث حالياً. يرجى الضغط على زر إعادة المحاولة.'
+          : 'Could not complete the search. Please click Retry.')
       );
     } finally {
       setIsLoading(false);
@@ -351,16 +353,26 @@ export function App() {
               <AlertTriangle className="h-5 w-5 shrink-0 text-amber-400" />
               <span>{errorMessage}</span>
             </div>
-            {lastSearchParams && (
+            <div className="flex items-center gap-2">
+              {lastSearchParams && (
+                <button
+                  type="button"
+                  onClick={() => handleExecuteSearch(lastSearchParams)}
+                  className="flex items-center gap-1.5 rounded-lg bg-amber-500/20 px-3 py-1.5 font-bold text-amber-300 hover:bg-amber-500/30 transition-colors cursor-pointer"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  <span>{isAr ? 'إعادة المحاولة' : 'Retry'}</span>
+                </button>
+              )}
               <button
                 type="button"
-                onClick={() => handleExecuteSearch(lastSearchParams)}
-                className="flex items-center gap-1.5 rounded-lg bg-amber-500/20 px-3 py-1.5 font-bold text-amber-300 hover:bg-amber-500/30 transition-colors cursor-pointer"
+                onClick={() => setErrorMessage(null)}
+                className="p-1.5 rounded-lg text-amber-300/70 hover:text-amber-100 hover:bg-amber-500/20 transition-colors cursor-pointer"
+                aria-label={isAr ? 'إغلاق التنبيه' : 'Dismiss alert'}
               >
-                <RotateCcw className="h-3.5 w-3.5" />
-                <span>{isAr ? 'إعادة المحاولة' : 'Retry'}</span>
+                <X className="h-4 w-4" />
               </button>
-            )}
+            </div>
           </div>
         )}
 
