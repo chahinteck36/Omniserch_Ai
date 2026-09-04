@@ -65,7 +65,7 @@ export async function executeUnifiedSearch(
   const openRouterKey = getOpenRouterApiKey();
   const customEndpoint = getCustomEndpoint();
 
-  // Tier 1: Try server endpoint if available
+  // Tier 1: Try server endpoint
   try {
     const controller = new AbortController();
     // 45-second timeout for deep research and multi-model synthesis
@@ -102,33 +102,40 @@ export async function executeUnifiedSearch(
           },
         };
       }
+    } else {
+      const errJson = await response.json().catch(() => null);
+      throw new Error(errJson?.error || `Server responded with status ${response.status}`);
     }
-  } catch (err) {
-    // Server is unreachable, timed out, or running on static host (e.g. Cloudflare Pages)
-    console.warn('[SearchService] Server unreachable or static deploy detected. Falling back smoothly.', err);
-  }
+  } catch (err: any) {
+    console.warn('[SearchService] Primary server call failed, checking alternative tiers...', err?.message || err);
 
-  // Tier 2: Try Direct Client-side OpenRouter if an OpenRouter key was provided by admin
-  if (openRouterKey && openRouterKey.trim()) {
-    try {
-      const orResult = await callOpenRouterDirectly(params, openRouterKey, customEndpoint);
-      if (orResult) {
-        return {
-          ...orResult,
-          searchMetadata: {
-            totalSources: orResult.sources?.length || 3,
-            processingTimeMs: Date.now() - startTime,
-            fallbackUsed: false,
-            serverLive: false,
-          },
-        };
+    // Tier 2: Try Direct Client-side OpenRouter if an OpenRouter key was provided
+    if (openRouterKey && openRouterKey.trim()) {
+      try {
+        const orResult = await callOpenRouterDirectly(params, openRouterKey, customEndpoint);
+        if (orResult) {
+          return {
+            ...orResult,
+            searchMetadata: {
+              totalSources: orResult.sources?.length || 0,
+              processingTimeMs: Date.now() - startTime,
+              fallbackUsed: false,
+              serverLive: false,
+            },
+          };
+        }
+      } catch (orErr) {
+        console.warn('[SearchService] OpenRouter direct call failed:', orErr);
       }
-    } catch (orErr) {
-      console.warn('[SearchService] OpenRouter direct call failed, using client synthesizer:', orErr);
     }
+
+    // Rethrow error so user sees real status and Retry button rather than confusing canned responses
+    throw new Error(
+      err?.message || (isAr ? 'حدث تأخير في الاتصال بالخادم. يرجى الضغط على زر إعادة المحاولة.' : 'Server connection delay. Please click Retry.')
+    );
   }
 
-  // Tier 3: Client-side High-Fidelity Synthesizer (Instant & Zero Error Guarantee)
+  // Tier 3: Fallback if needed
   return generateClientSynthesizedResult(params, startTime);
 }
 
@@ -513,50 +520,32 @@ export async function handleOperation(input: string): Promise<{ success: boolean
   };
 }
 
-function generateDefaultSources(query: string): Array<{ title: string; url: string; snippet?: string }> {
-  const enc = encodeURIComponent(query);
-  return [
-    {
-      title: `Google Knowledge Hub: ${query}`,
-      url: `https://www.google.com/search?q=${enc}`,
-      snippet: 'Comprehensive web indices, verified documentation, and authoritative benchmarks.',
-    },
-    {
-      title: `Wikipedia & Open Research Archive`,
-      url: `https://wikipedia.org/wiki/Special:Search?search=${enc}`,
-      snippet: 'Peer-reviewed academic classifications, historical timeline, and foundational taxonomy.',
-    },
-    {
-      title: `Global Tech & Developer Index`,
-      url: `https://github.com/search?q=${enc}`,
-      snippet: 'Open-source ecosystems, technical implementations, and benchmark architectures.',
-    },
-  ];
+function generateDefaultSources(_query: string): Array<{ title: string; url: string; snippet?: string }> {
+  return [];
 }
 
-function extractKeyTakeaways(text: string, isAr: boolean): string[] {
-  const lines = text.split('\n').filter((l) => l.trim().startsWith('-') || l.trim().startsWith('*') || /^\d+\./.test(l.trim()));
+function extractKeyTakeaways(text: string, _isAr: boolean): string[] {
+  if (!text) return [];
+  const lines = text.split('\n').filter((l) => l.trim().startsWith('-') || l.trim().startsWith('*') || /^\d+[\.\)]\s/.test(l.trim()));
   if (lines.length >= 2) {
-    return lines.slice(0, 4).map((l) => l.replace(/^[-*•\d.]+\s*/, '').trim());
+    return lines.slice(0, 4).map((l) => l.replace(/^[-*•\d.)]+\s*/, '').trim()).filter((s) => s.length > 10 && !s.startsWith('#'));
   }
-  return isAr
-    ? ['تحليل دقيق وموثق للموضوع المستعلم عنه.', 'استخلاص أهم النقاط العملية والقابلة للتطبيق.', 'مراجعة متعددة الأبعاد لضمان جودة الاستنتاجات.']
-    : ['Comprehensive verified analysis of the queried topic.', 'Actionable strategic insights ready for immediate deployment.', 'Cross-validated synthesis eliminating blindspots.'];
+  return [];
 }
 
 function generateRelatedQueries(query: string, isAr: boolean): string[] {
+  const q = query.trim().toLowerCase();
+  if (q.match(/^(\d+|كم|احسب|ما ناتج|حاصل|أهلاً|مرحبا|hi|hello)/i) && q.length < 30) {
+    return [];
+  }
   if (isAr) {
     return [
-      `أفضل الممارسات في ${query}`,
-      `مقارنة شاملة وتقييم لـ ${query}`,
-      `الاتجاهات المستقبلية المرتبطة بـ ${query}`,
-      `كيفية تطبيق وتطوير ${query}`,
+      `أمثلة عملية وتطبيقات إضافية لـ ${query}`,
+      `أهم الإيجابيات والتحديات لـ ${query}`,
     ];
   }
   return [
-    `Best practices for ${query}`,
-    `Comprehensive benchmark comparison for ${query}`,
-    `Future architectural trends in ${query}`,
-    `Step-by-step execution guide for ${query}`,
+    `Practical examples and applications for ${query}`,
+    `Pros, cons, and alternatives to ${query}`,
   ];
 }

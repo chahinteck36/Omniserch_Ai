@@ -69,8 +69,49 @@ export interface SearchResultPayload {
   };
 }
 
+// Helper to safely extract and parse JSON from LLM responses even if wrapped in markdown or contains formatting quirks
+function extractJsonSafe<T = any>(rawText: string): T | null {
+  if (!rawText || typeof rawText !== 'string') return null;
+
+  let cleaned = rawText.trim();
+
+  // Strip markdown code fences (```json ... ``` or ``` ...)
+  if (cleaned.startsWith('```')) {
+    cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  }
+
+  // Find outermost JSON object or array
+  const firstBrace = cleaned.indexOf('{');
+  const firstBracket = cleaned.indexOf('[');
+  let startIdx = -1;
+  let endIdx = -1;
+
+  if (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) {
+    startIdx = firstBrace;
+    endIdx = cleaned.lastIndexOf('}');
+  } else if (firstBracket !== -1) {
+    startIdx = firstBracket;
+    endIdx = cleaned.lastIndexOf(']');
+  }
+
+  if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+    cleaned = cleaned.slice(startIdx, endIdx + 1);
+  }
+
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    // Attempt minor repair for common LLM JSON syntax issues (e.g., trailing commas)
+    try {
+      const repaired = cleaned.replace(/,\s*([}\]])/g, '$1');
+      return JSON.parse(repaired);
+    } catch {
+      return null;
+    }
+  }
+}
+
 // Track search tool quota exhaustion to prevent wasteful 429 errors and slow retries
-// Default initialized with cooldown to avoid guaranteed 429 error on keys with zero search tool quota
 let googleSearchQuotaCooldownUntil = Date.now() + 6 * 60 * 60 * 1000;
 
 // Helper to safely call Gemini with verified fast models, search tool fallback, and error catching
@@ -80,7 +121,7 @@ async function callGeminiSafe(
     systemPrompt?: string;
     useSearch?: boolean;
     jsonResponse?: boolean;
-  }
+  } = {}
 ): Promise<{ text: string; rawResponse?: any; isFallback?: boolean }> {
   const ai = getGeminiClient();
   // Verified fast and reliable models in priority order
@@ -107,7 +148,7 @@ async function callGeminiSafe(
             config: configWithSearch,
           }),
           new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('SearchToolTimeout')), 10000)
+            setTimeout(() => reject(new Error('SearchToolTimeout')), 8000)
           ),
         ]);
 
@@ -116,16 +157,15 @@ async function callGeminiSafe(
         }
       } catch (searchErr: any) {
         const msg = String(searchErr?.message || searchErr);
-        // If search tool hits quota limit (429), place into cooldown so subsequent queries do not delay or error
         if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('quota')) {
-          googleSearchQuotaCooldownUntil = Date.now() + 2 * 60 * 60 * 1000; // 2 hour cooldown
-          break; // Immediately exit search tool loop and proceed to direct model calls
+          googleSearchQuotaCooldownUntil = Date.now() + 2 * 60 * 60 * 1000;
+          break;
         }
       }
     }
   }
 
-  // 2. Direct model call (reliable, instant, no external search tool quota limitations)
+  // 2. Direct model call (instant, resilient, logical, no search tool quota limits)
   for (const model of modelsToTry) {
     try {
       const directConfig: any = {};
@@ -143,7 +183,7 @@ async function callGeminiSafe(
           config: Object.keys(directConfig).length > 0 ? directConfig : undefined,
         }),
         new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('DirectModelTimeout')), 20000)
+          setTimeout(() => reject(new Error('DirectModelTimeout')), 15000)
         ),
       ]);
 
@@ -151,7 +191,7 @@ async function callGeminiSafe(
         return { text: response.text, rawResponse: response, isFallback: false };
       }
     } catch {
-      // Quietly continue to next model candidate
+      // Continue to next verified model candidate
     }
   }
 
@@ -173,22 +213,21 @@ export async function executeSearch(params: {
 
   if (mode === 'fast') {
     const systemPrompt = isArabic
-      ? `أنت المحرك الذكي الأساسي لمنصة "OmniSearch AI" (أومني سيرش) - منصة التجميع والبحث الفائق بالذكاء الاصطناعي.
-قواعد التشغيل وإطار المخرجات:
-1. الهوية والأسلوب: مهني، تقني، مباشر، وموجز، مع الحفاظ على أعلى كفاءة في استهلاك الرموز (Token Efficiency) دون حشو.
-2. إطار الإجابة الأساسي:
-   - **إجابة مباشرة (Direct Answer)**: قدّم الإجابة المباشرة أو الحل المحدد فوراً في الجملة الأولى.
-   - **تفصيل منظم (Structured Deep-Dive)**: استخدم نقاطاً محددة أو جداول مقارنة موجزة للحقائق والبيانات.
-   - **خطوات عملية قادمة (Actionable Next Steps)**: اختتم بنقطتين أو ثلاث خطوات أو مقترحات تالية واضحة للمستخدم.
-3. التنسيق: Markdown نقي، رصين وعصري باللغة العربية الفصحى السليمة.`
-      : `You are the Core AI Engine for "OmniSearch AI", an all-in-one AI aggregation platform.
-Operational Rules & Framework:
-1. Identity & Tone: Professional, highly concise, modern technical tone with strict token efficiency.
-2. Output Framework:
-   - Direct Answer: Deliver the core answer/solution in the very first sentence.
-   - Structured Deep-Dive: Bullet points, clean markdown, or comparison tables.
-   - Actionable Next Steps: 2-3 concrete, logical follow-up suggestions.
-3. Language: Clean, authoritative Modern Standard Arabic by default or English as requested.`;
+      ? `أنت المحرك الذكي الأساسي لمنصة "OmniSearch AI" (أومني سيرش).
+قواعد العمل وتقديم الإجابات:
+1. المنطق والدقة والمباشرة: أجب عن سؤال المستخدم الفعلي بشكل مباشر، دقيق، ومنطقي تماماً من الجملة الأولى.
+2. الهيكلة الواضحة: استخدم التنسيق الأنيق والواضح (نقاط محددة، جداول، عناوين فرعية موجزة) لشرح التفاصيل عند الحاجة بدون حشو أو عناوين شكلية مفتعلة.
+3. التنوع والذكاء:
+   - إذا كان السؤال مسألة رياضية أو منطقية: قم بحلها فوراً وبيّن خطوات الحل المنطقية بدقة ووضوح.
+   - إذا كان لغزاً أو سؤالاً حوارياً: قدّم التفسير المنطقي والذكي دون مواربة.
+   - إذا كان سؤالاً علمياً أو تاريخياً أو واقعياً: قدّم الحقائق الموثقة والصحيحة بدقة.
+4. الأسلوب: لغة عربية فصحى عصرية وسلسة، مهنية وبدون حشو لغوي.`
+      : `You are the Core AI Engine for "OmniSearch AI".
+Guidelines:
+1. Direct, Logical & Accurate: Deliver the direct answer/solution immediately in the opening sentence.
+2. Structured & Clear: Use clean markdown, concise bullet points, or tables where appropriate.
+3. Mathematical & Factual Precision: Solve math, logic problems, or riddles with crystal-clear deductive reasoning.
+4. Professional Tone: Modern, authoritative, concise, and token-efficient.`;
 
     const promptText = `User Query: "${query}"${fileContent ? `\nAttached file (${fileName}):\n${fileContent.slice(0, 4000)}` : ''}`;
 
@@ -222,19 +261,19 @@ Operational Rules & Framework:
     const systemPrompt = isArabic
       ? `أنت المحرك الذكي المتقدم للبحث العميق لمنصة "OmniSearch AI" (أومني سيرش - Deep Research AI Agent).
 قواعد التشغيل وإطار المخرجات:
-1. الهوية والأسلوب: خبير استقصائي تقني رصين، عالي الدقة والكفاءة في استهلاك الرموز، بلا حشو لغوي.
-2. إطار التقرير الاستقصائي:
-   - **إجابة مباشرة / الملخص التنفيذي**: الإجابة الحاسمة والنتيجة الإجمالية مباشرة في الصدارة.
-   - **تحليل معمق ومقارن (Structured Deep-Dive)**: أبعاد الموضوع، إحصائيات، جداول مقارنة، ونقاط محددة.
-   - **خطوات وتوصيات عملية قادمة (Actionable Next Steps)**: توصيات استراتيجية وخطوات تنفيذية واضحة للمستخدم.
+1. الهوية والأسلوب: خبير استقصائي تقني رصين، عالي الدقة والكفاءة، يقدم تحليلاً منطقياً معمقاً وشاملاً لموضوع المستخدم.
+2. إطار التقرير:
+   - ابدأ بالخلاصة التنفيذية المباشرة التي تجيب عن صلب الاستفسار.
+   - توسع في المحاور الجوهرية، الإحصائيات، وجداول المقارنة الواقعية.
+   - اختتم بالتوصيات والخطوات الاستراتيجية والعملية المنطقية.
 3. التنسيق: Markdown احترافي، عناوين دقيقة، ولغة عربية فصحى عصرية وسليمة.`
       : `You are the advanced Deep Research Engine for "OmniSearch AI".
 Operational Rules & Framework:
 1. Professional, highly structured, objective, and token-efficient.
 2. Output Framework:
-   - Direct Answer / Executive Summary in the very first block.
-   - Structured Deep-Dive: Comparative tables, key metrics, and bulleted takeaways.
-   - Actionable Next Steps: Strategic recommendations and implementation steps.
+   - Direct Executive Summary in the very first section.
+   - Structured Deep-Dive: Comparative tables, key metrics, and substantive takeaways.
+   - Actionable Next Steps: Practical, strategic recommendations and implementation steps.
 3. Language: Clean Modern Standard Arabic by default or English as requested.`;
 
     const promptText = `Conduct deep research on: "${query}"${fileContent ? `\nReferenced Document/Code (${fileName}):\n${fileContent.slice(0, 6000)}` : ''}`;
@@ -297,57 +336,64 @@ Operational Rules & Framework:
     const targetModels = models.length > 0 ? models : ['gemini', 'gpt4o', 'claude35', 'llama3'];
 
     const battlePrompt = isArabic
-      ? `أنت نظام مقارنة وتجميع متعدد النماذج (Multi-LLM Aggregator Hub).
-الموضوع المطلوب: "${query}"
+      ? `أنت نظام مقارنة وتجميع نماذج الذكاء الاصطناعي في منصة "OmniSearch AI".
+سؤال المستخدم الفعلي: "${query}"
 
-قم بتوليد إجابات مميزة تعكس الأسلوب الفعلي والنقاط البارزة لكل من النماذج التالية:
+المطلوب بدقة: أجب عن سؤال المستخدم الفعلي إجابة منطقية وكاملة وصحيحة 100% من منظور كل من النماذج التالية:
 ${targetModels.join(', ')}
 
-لكل نموذج، اجعل الإجابة تعبر عن شخصيته وقوته:
-- Gemini: متصل بالويب، دقيق، مدعوم بالمصادر والحقائق الحية.
-- GPT-4o: منظم للغاية، أسلوب شرح واضح، خطوات منطقية ومترابطة.
-- Claude 3.5: تحليلي عميق، لغة رصينة، مراعاة للفروق الدقيقة.
-- Llama 3: مباشر، تقني، عملي، مع تركيز مفتوح المصدر.
+شروط جوهرية للإجابة:
+1. يجب على كل نموذج أن يحل أو يجيب عن سؤال المستخدم نفسه مباشرة بمحتوى علمي/عملي/منطقي كامل، ولا تضع مجرد وصف عام أو تعليق شكلي عن النموذج.
+2. اجعل أسلوب كل نموذج مميزاً:
+   - Gemini: إجابة دقيقة، مدعومة بالحقائق والبيانات المحدثة.
+   - GPT-4o: إجابة منظمة خطوة بخطوة مع توضيح المنطق والحل.
+   - Claude 3.5: إجابة تحليلية رصينة ودقيقة لغوياً وتراعي الفروق الدقيقة.
+   - Llama 3: إجابة عملية ومباشرة وتقنية وموجزة.
+3. اكتب خلاصة إجماع حقيقية ومنطقية ومحددة تجيب عن السؤال بدقة في فقرة "consensus".
 
-أرجع النتيجة بصيغة JSON مطابقة للشكل التالي بدقة:
+أرجع النتيجة بصيغة JSON حصراً بالتنسيق التالي بدون أي نصوص قبلها أو بعدها:
 {
-  "consensus": "ملخص الإجماع والتوافق المشترك بين كافة النماذج في 3-4 جمل",
+  "consensus": "خلاصة الإجماع والحل المتفق عليه بين كافة النماذج لسؤال المستخدم",
   "models": [
     {
       "modelId": "gemini",
       "modelName": "Google Gemini 2.5 Pro",
       "provider": "Google",
       "badgeColor": "from-blue-500 to-cyan-500",
-      "content": "نص إجابة جيميني...",
-      "latencyMs": 420,
-      "tokensUsed": 650
+      "content": "إجابة جيميني الفعلية الكاملة على سؤال المستخدم...",
+      "latencyMs": 320,
+      "tokensUsed": 450
     }
   ]
 }`
       : `You are a Multi-LLM Aggregator hub comparing top AI models.
-Topic: "${query}"
+User's Question: "${query}"
 
-Generate authentic, distinctive responses that reflect the unique strengths and persona of each requested model:
+Requirements:
+Answer the user's actual question directly, factually, and logically from the distinct perspective of each requested model:
 ${targetModels.join(', ')}
 
-Persona traits:
-- Gemini: Live web-grounded, factual, concise, citation-rich.
-- GPT-4o: Highly structured, articulate, engaging conversational framework.
-- Claude 3.5: Nuanced, deep analytical reasoning, balanced, eloquent.
-- Llama 3: Direct, highly practical, technical, open-source spirit.
+Crucial rules:
+1. Each model must ACTUALLY ANSWER the user's specific question directly with complete, accurate, logical substance—do NOT write meta-descriptions about the model.
+2. Persona traits:
+   - Gemini: Grounded, factual, concise, direct.
+   - GPT-4o: Structured step-by-step reasoning, articulate.
+   - Claude 3.5: Nuanced, deep analytical reasoning, balanced.
+   - Llama 3: Practical, direct, technical, open-source spirit.
+3. Synthesize the authentic consensus answering the question in the "consensus" field.
 
 Return ONLY a valid JSON object matching:
 {
-  "consensus": "3-4 sentences synthesizing the common consensus and key takeaways agreed upon by all models",
+  "consensus": "2-3 sentences synthesizing the direct answer agreed upon by all models",
   "models": [
     {
       "modelId": "gemini",
       "modelName": "Google Gemini 2.5 Pro",
       "provider": "Google",
       "badgeColor": "from-blue-500 to-cyan-500",
-      "content": "model answer markdown...",
-      "latencyMs": 380,
-      "tokensUsed": 620
+      "content": "Direct, substantive model answer to the query...",
+      "latencyMs": 320,
+      "tokensUsed": 450
     }
   ]
 }`;
@@ -356,16 +402,21 @@ Return ONLY a valid JSON object matching:
       jsonResponse: true,
     });
 
-    let parsedBattle: { consensus?: string; models?: ModelResponse[] } = {};
-    if (text) {
+    let parsedBattle = extractJsonSafe<{ consensus?: string; models?: ModelResponse[] }>(text);
+
+    if (!parsedBattle || !parsedBattle.models || parsedBattle.models.length === 0) {
+      // Secondary direct attempt without strict JSON config
       try {
-        parsedBattle = JSON.parse(text);
+        const retryRes = await callGeminiSafe(`Provide a JSON object comparing responses to "${query}" across models: ${targetModels.join(', ')}. Must contain "consensus" and "models" array with modelId, modelName, provider, badgeColor, content.`, {
+          jsonResponse: true,
+        });
+        parsedBattle = extractJsonSafe<{ consensus?: string; models?: ModelResponse[] }>(retryRes.text);
       } catch {
-        // Continue to fallback builder
+        // Continue
       }
     }
 
-    if (!parsedBattle.models || parsedBattle.models.length === 0) {
+    if (!parsedBattle || !parsedBattle.models || parsedBattle.models.length === 0) {
       parsedBattle = generateSynthesizedBattleResponse(query, targetModels, isArabic);
     }
 
@@ -436,16 +487,9 @@ Return ONLY a valid JSON object matching:
     jsonResponse: true,
   });
 
-  let parsedCode: any = {};
-  if (text) {
-    try {
-      parsedCode = JSON.parse(text);
-    } catch {
-      // Fallback
-    }
-  }
+  let parsedCode = extractJsonSafe<any>(text);
 
-  if (!parsedCode.overview) {
+  if (!parsedCode || !parsedCode.overview) {
     parsedCode = generateSynthesizedCodeResponse(query, isArabic, fileContent, fileName);
   }
 
@@ -499,15 +543,16 @@ function extractSearchQueries(response: any): string[] {
   return [];
 }
 
-function extractKeyTakeaways(text: string, isArabic: boolean): string[] {
+function extractKeyTakeaways(text: string, _isArabic: boolean): string[] {
+  if (!text || typeof text !== 'string') return [];
   const lines = text.split('\n');
   const bullets: string[] = [];
 
   for (const line of lines) {
     const trimmed = line.trim();
-    if (trimmed.startsWith('- ') || trimmed.startsWith('* ') || trimmed.match(/^\d+\.\s/)) {
-      const clean = trimmed.replace(/^[-*\d.]+\s*/, '').trim();
-      if (clean.length > 15 && clean.length < 250) {
+    if (trimmed.startsWith('- ') || trimmed.startsWith('* ') || trimmed.match(/^\d+[\.\)]\s/)) {
+      const clean = trimmed.replace(/^[-*\d.)]+\s*/, '').trim();
+      if (clean.length > 15 && clean.length < 250 && !clean.startsWith('#')) {
         bullets.push(clean);
       }
     }
@@ -517,17 +562,18 @@ function extractKeyTakeaways(text: string, isArabic: boolean): string[] {
     return bullets.slice(0, 5);
   }
 
-  return isArabic
-    ? [
-        'معلومات دقيقة وموثوقة تغطي أبعاد السؤال بدقة.',
-        'تحليل شامل ومفصل مع استعراض شامل للنتائج والبيانات.',
-        'إمكانية الاستكشاف الإضافي عبر البحث العميق ومقارنة النماذج.',
-      ]
-    : [
-        'Verified real-time information synthesized from authoritative sources.',
-        'High-density factual insights optimized for clarity and decision-making.',
-        'Expanded context available via Deep Research and Multi-LLM consensus.',
-      ];
+  // Extract substantive complete sentences if no explicit list formatting was used
+  const sentences = text
+    .split(/(?<=[.!?؟])\s+|\n\n+/)
+    .map((s) => s.trim().replace(/^#+\s*/, '').replace(/[*_`]/g, ''))
+    .filter((s) => s.length >= 30 && s.length <= 160 && !s.includes(':') && !s.startsWith('-'));
+
+  if (sentences.length >= 2) {
+    return sentences.slice(0, 3);
+  }
+
+  // Return empty array rather than fake generic placeholders
+  return [];
 }
 
 function extractSummaryIntro(text: string): string {
@@ -544,126 +590,55 @@ function extractSummaryIntro(text: string): string {
 }
 
 function generateRelatedQueries(query: string, isArabic: boolean): string[] {
+  const q = query.trim().toLowerCase();
+  // Don't show complex related queries for short math questions, greetings, or trivial lookups
+  if (q.match(/^(\d+|كم|احسب|ما ناتج|حاصل|أهلاً|مرحبا|hi|hello)/i) && q.length < 30) {
+    return [];
+  }
+
   if (isArabic) {
     return [
-      `ما هي أحدث التطورات والتوقعات المستقبلية حول ${query}؟`,
-      `مقارنة شاملة وأبرز البدائل والمزايا والعيوب لـ ${query}`,
-      `أفضل الممارسات ودليل التطبيق العملي لـ ${query}`,
-      `أهم الإحصائيات والأرقام العالمية المتعلقة بـ ${query}`,
+      `أمثلة وتطبيقات عملية إضافية حول ${query}`,
+      `أهم الإيجابيات والتحديات والبدائل لـ ${query}`,
+      `دليل الخطوات التوضيحية التفصيلية لـ ${query}`,
     ];
   }
   return [
-    `What are the latest breakthroughs and future trends in ${query}?`,
-    `Comprehensive pros, cons, and alternatives to ${query}`,
-    `Best practices and practical step-by-step guide for ${query}`,
-    `Key data, market metrics, and expert analysis on ${query}`,
+    `Practical examples and applications for ${query}`,
+    `Pros, cons, and alternatives to ${query}`,
+    `Step-by-step implementation guide for ${query}`,
   ];
 }
 
-function generateDefaultSources(query: string): SearchSource[] {
-  const clean = encodeURIComponent(query.trim());
-  return [
-    {
-      title: `Global Knowledge Base: ${query}`,
-      url: `https://en.wikipedia.org/wiki/Special:Search?search=${clean}`,
-      snippet: `Comprehensive overview, historical background, and structured details regarding ${query}.`,
-    },
-    {
-      title: `Technical & Industry Grounding: ${query}`,
-      url: `https://news.google.com/search?q=${clean}`,
-      snippet: `Real-time updates, analytical publications, and verified data related to ${query}.`,
-    },
-    {
-      title: `Academic & Research Insights: ${query}`,
-      url: `https://scholar.google.com/scholar?q=${clean}`,
-      snippet: `Peer-reviewed studies, authoritative datasets, and analytical findings on ${query}.`,
-    },
-  ];
+function generateDefaultSources(_query: string): SearchSource[] {
+  // Never return fake static Wikipedia/Scholar search URLs.
+  // Return empty array if real search grounding chunks were not retrieved.
+  return [];
 }
 
-// Fallback response generators for maximum uptime and resilience
+// Fallback response generators for resilience when AI engine connection is interrupted
 function generateSynthesizedFastResponse(query: string, isArabic: boolean): string {
   if (isArabic) {
-    return `### 💡 ملخص استقصائي ذكي حول: "${query}"
+    return `### نعتذر، تعذر الاتصال بمحرك الذكاء الاصطناعي حالياً
+لم نتمكن من معالجة استفسارك: **"${query}"** نظراً لتوقف مؤقت في الاتصال بالخدمة.
 
-تمت معالجة الاستعلام وتقديم الإجابة المباشرة والتحليلية:
-
-- **الرؤية العامة**: يمثل موضوع "${query}" أحد المحاور الحيوية التي تتطلب فهم الخصائص الأساسية والأبعاد التطبيقية المرتبطة به.
-- **الركائز الأساسية**:
-  1. الدقة والموثوقية في استخراج الحقائق والبيانات.
-  2. الربط بين السياق العملي وأحدث الممارسات المعيارية.
-  3. تحليل العوامل المؤثرة وفرص التحسين والتطوير المستمر.
-- **التوصيات العملية**: يُنصح بالتركيز على التحديث المستمر ومراجعة أحدث المصادر المتخصصة للحصول على أدق النتائج ومتابعة مؤشرات الأداء.`;
+- يرجى التحقق من اتصال الإنترنت أو الضغط على زر **إعادة المحاولة**.
+- يمكنك أيضاً التبديل بين أوضاع البحث (البحث السريع، مقارنة النماذج، أو البحث العميق).`;
   }
-  return `### 💡 Quick Research Synthesis: "${query}"
+  return `### AI Engine Connection Momentarily Unavailable
+We could not process your query: **"${query}"** due to a temporary network interruption.
 
-Here is the concise, synthesized analysis regarding your query:
-
-- **Core Assessment**: The inquiry around "${query}" centers on established industry standards, verifiable data, and key analytical frameworks.
-- **Key Takeaways**:
-  1. Comprehensive examination of the foundational mechanics and current trends.
-  2. Integration of best practices to ensure optimal outcomes and performance.
-  3. Actionable strategic recommendations tailored to immediate implementation.
-- **Next Steps**: Review the comparative multi-model consensus or run a Deep Research track for expanded statistics and granular roadmaps.`;
+- Please check your network connection and click **Retry**.
+- You can also switch between search modes (Fast, Battle, or Deep Research).`;
 }
 
 function generateSynthesizedDeepReport(query: string, isArabic: boolean): string {
   if (isArabic) {
-    return `# تقرير البحث الاستقصائي الشامل (Deep Research Report)
-## الموضوع: ${query}
-
----
-
-### 1. الملخص التنفيذي (Executive Summary)
-يقدم هذا التقرير تحليلاً متعدد الأبعاد لاستعلامك حول **"${query}"**، مبرزاً العوامل الفنية، والبيانات الإحصائية، والأبعاد الاستراتيجية المعتمدة لدى كبرى المؤسسات ومراكز الأبحاث.
-
-### 2. التحليل المتعمق والسياق الاستقصائي (Deep Dive Analysis)
-- **الخلفية والسياق**: تطورت المفاهيم والتقنيات المرتبطة بـ ${query} بشكل متسارع خلال السنوات الأخيرة، مما خلق فرصاً وتحديات تتطلب إدارة دقيقة للموارد وتطبيق المعايير الحديثة.
-- **الآليات المحورية**: يتطلب النجاح في هذا المجال التركيز على الكفاءة التشغيلية، وموثوقية البيانات، والالتزام بأفضل الممارسات الموثقة.
-
-### 3. مقارنة الإيجابيات والتحديات (Pros & Cons Analysis)
-| الجانب | المزايا والفرص | التحديات والاعتبارات |
-| :--- | :--- | :--- |
-| **الكفاءة والأداء** | سرعة الإنجاز وتقليل التكلفة الإجمالية | الحاجة إلى التدريب وإدارة التغيير |
-| **الموثوقية** | تقليل الأخطاء البشرية وضمان التكرارية | متطلبات البنية التحتية والجاهزية |
-| **القابلية للتوسع** | دعم النمو والتكيف مع المتغيرات | المتابعة الدورية وتحديث السياسات |
-
-### 4. الإحصائيات والاتجاهات المستقبلية (Future Trends & Metrics)
-- تشير الدراسات إلى نمو متسارع في تبني الحلول الذكية بنسب تتجاوز **35% سنوياً**.
-- التحول نحو الأتمتة المتقدمة والاستدامة يعتبر العامل الحاسم في تميز المؤسسات.
-
-### 5. الاستنتاجات والتوصيات الاستراتيجية (Actionable Recommendations)
-1. **التطبيق المرحلي**: البدء بنطاق محدد واختبار النتائج قبل التوسع الشامل.
-2. **القياس والتقييم**: وضع مؤشرات أداء رئيسية (KPIs) واضحة لمراقبة الجودة.
-3. **التكامل الرقمي**: الاستفادة من نماذج الذكاء الاصطناعي المتعددة لتحقيق التوافق المعرفي الشامل.`;
+    return `### تقرير البحث الاستقصائي لـ: "${query}"
+تعذر إكمال التقرير الاستقصائي الموسع بالكامل بسبب انقطاع مؤقت في الاتصال بنماذج الاستدلال. يرجى إعادة المحاولة للحصول على التقرير الشامل.`;
   }
-  return `# Comprehensive Deep Research Report
-## Focus Area: ${query}
-
----
-
-### 1. Executive Summary
-This report delivers an in-depth, multi-dimensional assessment of **"${query}"**, synthesizing analytical frameworks, verified metrics, and strategic recommendations across technical and operational domains.
-
-### 2. In-Depth Technical & Conceptual Analysis
-- **Context & Evolution**: The ecosystem surrounding "${query}" has witnessed rapid innovation, driving elevated performance requirements and new operational paradigms.
-- **Critical Dynamics**: Sustained value depends upon rigorous methodology, seamless integration with existing pipelines, and transparent governance.
-
-### 3. Comparative Perspectives & Trade-offs
-| Dimension | Key Strengths & Opportunities | Challenges & Mitigation |
-| :--- | :--- | :--- |
-| **Execution Speed** | Accelerated time-to-insight and reduced overhead | Requires disciplined validation mechanisms |
-| **Reliability** | High structural consistency and reproducibility | Continuous calibration and monitoring |
-| **Scalability** | Frictionless expansion across diverse workloads | Infrastructure readiness and maintenance |
-
-### 4. Key Metrics & Future Outlook
-- Industry benchmarks indicate an average efficiency uplift of **25–40%** when modern methodologies are implemented systematically.
-- Cross-functional AI augmentation continues to replace siloed workflows with unified real-time intelligence.
-
-### 5. Strategic Action Plan
-1. **Phased Implementation**: Establish pilot validation stages prior to full-scale deployment.
-2. **Measurement Protocol**: Define strict performance indicators and SLA parameters.
-3. **Cross-Model Validation**: Utilize multi-LLM consensus to eliminate single-point blindspots.`;
+  return `### Deep Research Report for: "${query}"
+Could not finalize the comprehensive report due to a temporary connectivity issue with the inference engine. Please retry to generate the full report.`;
 }
 
 function generateSynthesizedBattleResponse(
@@ -672,7 +647,7 @@ function generateSynthesizedBattleResponse(
   isArabic: boolean
 ): { consensus: string; models: ModelResponse[] } {
   const modelMetadata: Record<string, { name: string; provider: string; color: string }> = {
-    gemini: { name: 'Google Gemini 3.6 Flash', provider: 'Google', color: 'from-blue-500 to-cyan-500' },
+    gemini: { name: 'Google Gemini 2.5 Pro', provider: 'Google', color: 'from-blue-500 to-cyan-500' },
     gpt4o: { name: 'OpenAI GPT-4o', provider: 'OpenAI', color: 'from-emerald-500 to-teal-500' },
     claude35: { name: 'Claude 3.5 Sonnet', provider: 'Anthropic', color: 'from-amber-500 to-orange-500' },
     llama3: { name: 'Meta Llama 3.3', provider: 'Meta AI', color: 'from-purple-500 to-indigo-500' },
@@ -682,50 +657,9 @@ function generateSynthesizedBattleResponse(
   const results: ModelResponse[] = models.map((mId) => {
     const meta = modelMetadata[mId] || { name: `${mId.toUpperCase()} Model`, provider: 'AI Hub', color: 'from-slate-500 to-slate-700' };
 
-    let content = '';
-    if (isArabic) {
-      if (mId === 'gemini') {
-        content = `### 🌐 إجابة Google Gemini (التحليل الميداني المدعوم بالمصادر)
-- التركيز على أحدث البيانات والحقائق الميدانية الموثقة حول "${query}".
-- دمج الحقائق المستخرجة من الويب مع استنتاجات دقيقة وموجزة تدعم اتخاذ القرار.
-- استعراض الأبعاد العملية وسرعة الاستجابة بأعلى درجات الموثوقية.`;
-      } else if (mId === 'gpt4o') {
-        content = `### ⚡ إجابة OpenAI GPT-4o (الهيكلة المنطقية والتنظيم)
-- **الخطوة الأولى**: تحليل مدخلات "${query}" وتحديد النطاق العملي.
-- **الخطوة الثانية**: صياغة الحلول خطوة بخطوة مع توضيح المنطق والترابط.
-- **الخلاصة**: تقديم خطة تنفيذية منظمة وسهلة التطبيق الفوري.`;
-      } else if (mId === 'claude35') {
-        content = `### 🧠 إجابة Claude 3.5 Sonnet (العمق التحليلي والرصانة)
-- نظرة استقصائية فاحصة حول "${query}" مع مراعاة الفروق الدقيقة والمحاذير الفلسفية والأخلاقية.
-- دراسة الآثار طويلة المدى وتحليل توازنات التكلفة مقابل الفائدة.
-- لغة دقيقة متوازنة تقدم رؤية شاملة تخاطب المختصين وصناع القرار.`;
-      } else {
-        content = `### 🛠️ إجابة Meta Llama 3 (النهج التقني المباشر)
-- إجابة تقنية مباشرة وعملية تركز على التنفيذ الملموس والحلول البرمجية والمفتوحة.
-- خطوات برمجية/تطبيقية بدون مقدمات مطولة لسرعة الإنجاز.`;
-      }
-    } else {
-      if (mId === 'gemini') {
-        content = `### 🌐 Google Gemini 3.6 Flash Response (Grounded & Factual)
-- Real-time synthesis focused on verified groundings for "${query}".
-- High-density factual highlights paired with authoritative citations.
-- Direct, clear conclusions optimized for rapid decision-making.`;
-      } else if (mId === 'gpt4o') {
-        content = `### ⚡ OpenAI GPT-4o Response (Structured & Conversational)
-- **Framework**: Clear step-by-step deconstruction of "${query}".
-- **Key Mechanics**: Logical prioritization and actionable implementation guide.
-- **Summary**: Cohesive synthesis with immediate practical applicability.`;
-      } else if (mId === 'claude35') {
-        content = `### 🧠 Anthropic Claude 3.5 Sonnet (Nuanced & Analytical)
-- Deep investigative analysis into the underlying mechanics of "${query}".
-- Balanced consideration of edge cases, trade-offs, and governance guidelines.
-- Sophisticated, articulate synthesis built for high-stakes problem solving.`;
-      } else {
-        content = `### 🛠️ Meta Llama 3.3 (Technical & Open-Source Practicality)
-- Direct, highly practical execution playbook for "${query}".
-- Technical clarity focused on implementation efficiency and modular design.`;
-      }
-    }
+    const content = isArabic
+      ? `الإجابة المباشرة للاستعلام: "${query}". تعذر استرداد التفاصيل الكاملة لهذا النموذج نظراً لانقطاع مؤقت في الاتصال، يرجى الضغط على زر إعادة المحاولة.`
+      : `Response for: "${query}". Full response could not be loaded due to a temporary connection interruption. Please click retry.`;
 
     return {
       modelId: mId,
@@ -733,14 +667,14 @@ function generateSynthesizedBattleResponse(
       provider: meta.provider,
       badgeColor: meta.color,
       content,
-      latencyMs: Math.floor(Math.random() * 200) + 280,
-      tokensUsed: Math.floor(Math.random() * 150) + 450,
+      latencyMs: 320,
+      tokensUsed: 250,
     };
   });
 
   const consensus = isArabic
-    ? `توافقت كافة النماذج الذكية (Gemini, GPT-4o, Claude, Llama) على أن محور "${query}" يتطلب اتباع منهجية دقيقة تجمع بين سرعة التنفيذ، وضمان موثوقية البيانات، والمتابعة المستمرة للأداء.`
-    : `All leading models (Gemini, GPT-4o, Claude, Llama) share strong consensus on "${query}", emphasizing the imperative of verified data integrity, phased execution, and continuous optimization.`;
+    ? `الإجابة المشتركة للاستعلام "${query}". يرجى إعادة المحاولة في حال لم تكتمل تفاصيل النماذج بالكامل.`
+    : `Consensus summary for "${query}". Please retry if full model outputs are incomplete.`;
 
   return { consensus, models: results };
 }
@@ -751,42 +685,29 @@ function generateSynthesizedCodeResponse(
   fileContent?: string,
   fileName?: string
 ): any {
-  const codeSample = fileContent || `// Sample snippet for: ${query}
+  const codeSample = fileContent || `// Code snippet for: ${query}
 export function processQuery(input: string) {
   if (!input) return null;
-  const sanitized = input.trim();
-  return { status: 'success', data: sanitized, timestamp: Date.now() };
+  return { status: 'success', data: input.trim(), timestamp: Date.now() };
 }`;
 
   if (isArabic) {
     return {
-      overview: `تم تدقيق الكود والوثيقة البرمجية (${fileName || 'الكود المرفق'}) بنجاح. التحليل يوضح بنية الكود وجودته.`,
-      bugsOrIssues: [
-        'ضرورة التحقق الصارم من القيم الفارغة والمعدومة (Null/Undefined checks).',
-        'معالجة استثناءات الأخطاء الحافة لتجنب انهيار التطبيق.',
-      ],
-      improvements: [
-        'تحسين كتابة الأنواع بواسطة TypeScript لضمان النوع القوي Type-Safety.',
-        'إضافة التوثيق المضمن وعزل الدوال النقية لتسهيل الاختبارات الأوتوماتيكية.',
-      ],
+      overview: `تحليل أولي للكود (${fileName || 'الكود المرفق'}).`,
+      bugsOrIssues: ['يرجى إعادة المحاولة لإجراء فحص برمجي معمق عبر المحرك الذكي.'],
+      improvements: ['التأكد من معالجة حالات الخطأ وكتابة أنواع TypeScript الصارمة.'],
       language: 'typescript',
       optimizedCode: codeSample,
-      explanation: 'تم فحص الكود وتطبيق أفضل الممارسات البرمجية لرفع الأداء والحماية.',
+      explanation: 'تم فحص الكود بشكل أولي. أعد المحاولة للحصول على تدقيق ثغرات كامل.',
     };
   }
 
   return {
-    overview: `Audit completed successfully for (${fileName || 'provided code snippet'}). Analysis reveals clean core architecture with key optimization opportunities.`,
-    bugsOrIssues: [
-      'Input sanitization and boundary check enforcement for edge cases.',
-      'Explicit error boundaries to prevent uncaught runtime exceptions.',
-    ],
-    improvements: [
-      'Strict TypeScript typing for enhanced static safety.',
-      'Modularization of utility routines to maximize testability and reusability.',
-    ],
+    overview: `Preliminary analysis for (${fileName || 'provided code'}).`,
+    bugsOrIssues: ['Please retry to run a comprehensive static and security audit.'],
+    improvements: ['Ensure strict TypeScript typing and defensive error boundaries.'],
     language: 'typescript',
     optimizedCode: codeSample,
-    explanation: 'Refactored code with safety guards, explicit typings, and inline commentary.',
+    explanation: 'Basic review completed. Click retry for deep security and syntax audit.',
   };
 }
