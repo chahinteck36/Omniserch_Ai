@@ -2,6 +2,7 @@ import { AVAILABLE_MODELS } from '../data/models';
 import { ModelConfig } from '../types';
 
 const MODELS_CONFIG_STORAGE_KEY = 'omnisearch_models_config';
+const GEMINI_KEY_STORAGE = 'omnisearch_gemini_key';
 const OPENROUTER_KEY_STORAGE = 'omnisearch_openrouter_key';
 const CUSTOM_ENDPOINT_STORAGE = 'omnisearch_custom_endpoint';
 
@@ -75,6 +76,76 @@ export function resetModelsToDefault(): ModelConfig[] {
   const defaults = getDefaultModelsConfig();
   saveModelsConfig(defaults);
   return defaults;
+}
+
+export function getGeminiApiKey(): string {
+  try {
+    const envKey = (import.meta as any).env?.VITE_GEMINI_API_KEY || '';
+    return localStorage.getItem(GEMINI_KEY_STORAGE) || envKey || '';
+  } catch {
+    return (import.meta as any).env?.VITE_GEMINI_API_KEY || '';
+  }
+}
+
+export function saveGeminiApiKey(key: string): void {
+  try {
+    if (key.trim()) {
+      localStorage.setItem(GEMINI_KEY_STORAGE, key.trim());
+    } else {
+      localStorage.removeItem(GEMINI_KEY_STORAGE);
+    }
+    window.dispatchEvent(new CustomEvent('omnisearch:keys_updated'));
+  } catch (err) {
+    console.error('Failed to save Gemini key:', err);
+  }
+}
+
+export function removeGeminiApiKey(): void {
+  try {
+    localStorage.removeItem(GEMINI_KEY_STORAGE);
+    window.dispatchEvent(new CustomEvent('omnisearch:keys_updated'));
+  } catch (err) {
+    console.error('Failed to remove Gemini key:', err);
+  }
+}
+
+/**
+ * Validates a Gemini API Key via direct lightweight ping to Google Generative Language API
+ */
+export async function validateGeminiApiKey(key: string): Promise<{
+  valid: boolean;
+  message: string;
+}> {
+  const cleanKey = key.trim();
+  if (!cleanKey) {
+    return { valid: false, message: 'مفتاح Gemini فارغ' };
+  }
+
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${encodeURIComponent(cleanKey)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: 'ping' }] }],
+        }),
+      }
+    );
+
+    if (res.ok) {
+      return { valid: true, message: 'مفتاح Gemini صالح وفعال بنجاح! جاهز للاستخدام.' };
+    }
+
+    const errData = await res.json().catch(() => null);
+    const msg = errData?.error?.message || `خطأ استجابة من Google: كود ${res.status}`;
+    return { valid: false, message: msg };
+  } catch (err: any) {
+    return {
+      valid: false,
+      message: err?.message || 'تعذر الاتصال بـ Google API للتحقق من المفتاح',
+    };
+  }
 }
 
 export function getOpenRouterApiKey(): string {

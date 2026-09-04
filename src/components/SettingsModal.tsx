@@ -15,13 +15,22 @@ import {
   AlertCircle,
   Activity,
   Zap,
-  Globe
+  Globe,
+  Rocket,
+  Server,
+  Cloud,
+  Terminal,
+  HelpCircle
 } from 'lucide-react';
 import { Language, ModelConfig } from '../types';
 import { 
   getStoredModelsConfig, 
   saveModelsConfig, 
   resetModelsToDefault,
+  getGeminiApiKey,
+  saveGeminiApiKey,
+  removeGeminiApiKey,
+  validateGeminiApiKey,
   getOpenRouterApiKey,
   saveOpenRouterApiKey,
   removeOpenRouterApiKey,
@@ -46,10 +55,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 }) => {
   const isAr = language === 'ar';
   
-  // Tabs: 'keys' | 'models'
-  const [activeTab, setActiveTab] = useState<'keys' | 'models'>('keys');
+  // Tabs: 'keys' | 'models' | 'deploy'
+  const [activeTab, setActiveTab] = useState<'keys' | 'models' | 'deploy'>('keys');
 
-  // Keys State
+  // Gemini Key State
+  const [geminiKey, setGeminiKey] = useState('');
+  const [showGeminiKey, setShowGeminiKey] = useState(false);
+  const [isTestingGeminiKey, setIsTestingGeminiKey] = useState(false);
+  const [geminiValidationResult, setGeminiValidationResult] = useState<{
+    valid: boolean;
+    message: string;
+  } | null>(null);
+
+  // OpenRouter Keys State
   const [openRouterKey, setOpenRouterKey] = useState('');
   const [showKey, setShowKey] = useState(false);
   const [customEndpoint, setCustomEndpoint] = useState('');
@@ -75,10 +93,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   // Load configs on open
   useEffect(() => {
     if (isOpen) {
+      setGeminiKey(getGeminiApiKey());
       setOpenRouterKey(getOpenRouterApiKey());
       setCustomEndpoint(getCustomEndpoint());
       setModelsList(getStoredModelsConfig());
       setKeyValidationResult(null);
+      setGeminiValidationResult(null);
 
       // Check backend status
       setBackendHealth((prev) => ({ ...prev, checking: true }));
@@ -96,10 +116,41 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   // Handle Save API Keys
   const handleSaveKeys = () => {
+    saveGeminiApiKey(geminiKey);
     saveOpenRouterApiKey(openRouterKey);
     saveCustomEndpoint(customEndpoint);
     setIsSaved(true);
     setTimeout(() => setIsSaved(false), 2200);
+  };
+
+  // Handle Clear Gemini Key
+  const handleClearGeminiKey = () => {
+    removeGeminiApiKey();
+    setGeminiKey('');
+    setGeminiValidationResult(null);
+    setIsSaved(true);
+    setTimeout(() => setIsSaved(false), 2000);
+  };
+
+  // Handle Test Gemini Key
+  const handleTestGeminiKey = async () => {
+    if (!geminiKey.trim()) {
+      setGeminiValidationResult({
+        valid: false,
+        message: isAr ? 'يرجى إدخال مفتاح Gemini أولاً لفهصه' : 'Please enter Gemini key first',
+      });
+      return;
+    }
+
+    setIsTestingGeminiKey(true);
+    setGeminiValidationResult(null);
+
+    const res = await validateGeminiApiKey(geminiKey);
+    setIsTestingGeminiKey(false);
+    setGeminiValidationResult({
+      valid: res.valid,
+      message: res.message,
+    });
   };
 
   // Handle Clear Key
@@ -204,7 +255,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             >
               <KeyRound className="h-3.5 w-3.5" />
               <span>{isAr ? 'مفاتيح الـ API والاتصال' : 'API Keys & Engine'}</span>
-              {openRouterKey && (
+              {(geminiKey || openRouterKey) && (
                 <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
               )}
             </button>
@@ -224,6 +275,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 {modelsList.filter((m) => m.isEnabled).length}/{modelsList.length}
               </span>
             </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('deploy')}
+              className={`flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-bold transition-all ${
+                activeTab === 'deploy'
+                  ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-600/30'
+                  : 'bg-slate-900/80 text-slate-400 hover:bg-slate-800 hover:text-white'
+              }`}
+            >
+              <Rocket className="h-3.5 w-3.5 text-blue-400" />
+              <span>{isAr ? 'دليل الرفع على GitHub وقوقل 🚀' : 'GitHub & Google Deploy Guide'}</span>
+            </button>
           </div>
         </div>
 
@@ -240,13 +304,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <Sparkles className="h-5 w-5" />
                     </div>
                     <div>
-                      <div className="text-xs font-bold text-white">
-                        {isAr ? 'محرك Google Gemini الأساسي (Server Engine)' : 'Primary Gemini Engine'}
+                      <div className="text-xs font-bold text-white flex items-center gap-2">
+                        <span>{isAr ? 'محرك Google Gemini الأساسي' : 'Primary Gemini Engine'}</span>
+                        {geminiKey && (
+                          <span className="rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 text-[10px] text-emerald-300 font-medium">
+                            {isAr ? 'مفتاح مباشر مفعل' : 'Direct Key Active'}
+                          </span>
+                        )}
                       </div>
                       <div className="text-[11px] text-slate-400">
                         {isAr
-                          ? 'محرك البحث والاستدلال السحابي المتصل بالويب والبحث الحي'
-                          : 'Server-side high-throughput reasoning with real-time web grounding'}
+                          ? 'يعمل عبر الخادم السحابي أو مباشرة عبر متصفحك عند نقل الموقع إلى GitHub'
+                          : 'Operates via backend server or directly in-browser on standalone static deployments'}
                       </div>
                     </div>
                   </div>
@@ -254,8 +323,102 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <div className="flex items-center gap-2">
                     <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 px-3 py-1 text-[11px] font-bold text-emerald-300">
                       <Activity className="h-3 w-3 animate-pulse text-emerald-400" />
-                      <span>{backendHealth.ok ? (isAr ? 'نشط ومتصل' : 'Online & Ready') : (isAr ? 'غير متصل' : 'Offline')}</span>
+                      <span>{backendHealth.ok || geminiKey ? (isAr ? 'جاهز للبحث' : 'Ready') : (isAr ? 'يحتاج مفتاح' : 'Needs Key')}</span>
                     </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* CARD 1: Google Gemini API Key (Direct Browser & Standalone Engine) */}
+              <div className="rounded-2xl border border-blue-500/30 bg-blue-950/10 p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-blue-200 uppercase tracking-wider flex items-center gap-1.5">
+                    <Sparkles className="h-4 w-4 text-blue-400" />
+                    <span>{isAr ? 'مفتاح Google Gemini API (للعمل المباشر بدون سيرفر)' : 'Google Gemini API Key (Standalone)'}</span>
+                  </label>
+                  <a
+                    href="https://aistudio.google.com/app/apikey"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 font-semibold underline underline-offset-2"
+                  >
+                    <span>{isAr ? 'احصل على مفتاح مجاني بضغطة زر' : 'Get Free Key from Google'}</span>
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                </div>
+
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  {isAr
+                    ? '💡 هذا هو الحل لمشكلة "النتائج غير الواقعية" عند رفع الموقع على GitHub Pages أو استضافات Google: وضع مفتاحك هنا يجعل المتصفح يتصل بذكاء Gemini مباشرة ويولد إجابات حية وحقيقية 100%!'
+                    : '💡 Solves unrealistic results on GitHub Pages / static hosting: pasting your key connects directly to Gemini for 100% real live research!'}
+                </p>
+
+                <div className="relative">
+                  <input
+                    type={showGeminiKey ? 'text' : 'password'}
+                    value={geminiKey}
+                    onChange={(e) => setGeminiKey(e.target.value)}
+                    placeholder="AIzaSy..."
+                    className="w-full rounded-xl border border-blue-500/40 bg-slate-950 px-4 py-3 text-xs sm:text-sm font-mono text-slate-200 placeholder-slate-600 focus:border-blue-400 focus:outline-none pr-10 rtl:pr-4 rtl:pl-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowGeminiKey(!showGeminiKey)}
+                    className="absolute right-3 rtl:right-auto rtl:left-3 top-3 text-slate-500 hover:text-slate-300"
+                  >
+                    {showGeminiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+
+                {/* Gemini Validation Feedback */}
+                {geminiValidationResult && (
+                  <div
+                    className={`flex items-center gap-2 rounded-xl p-3 text-xs font-medium ${
+                      geminiValidationResult.valid
+                        ? 'border border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                        : 'border border-red-500/30 bg-red-500/10 text-red-300'
+                    }`}
+                  >
+                    {geminiValidationResult.valid ? (
+                      <Check className="h-4 w-4 shrink-0 text-emerald-400" />
+                    ) : (
+                      <AlertCircle className="h-4 w-4 shrink-0 text-red-400" />
+                    )}
+                    <span>{geminiValidationResult.message}</span>
+                  </div>
+                )}
+
+                {/* Gemini Actions */}
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={handleTestGeminiKey}
+                    disabled={isTestingGeminiKey || !geminiKey.trim()}
+                    className="flex items-center gap-1.5 rounded-xl border border-blue-500/30 bg-blue-900/30 px-3.5 py-2 text-xs font-bold text-blue-200 hover:bg-blue-800/40 disabled:opacity-50 transition-colors"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${isTestingGeminiKey ? 'animate-spin text-blue-400' : ''}`} />
+                    <span>{isTestingGeminiKey ? (isAr ? 'جارِ فحص الاتصال مع Google...' : 'Testing...') : (isAr ? 'فحص واختبار مفتاح Gemini' : 'Test Gemini Key')}</span>
+                  </button>
+
+                  <div className="flex items-center gap-2">
+                    {geminiKey && (
+                      <button
+                        type="button"
+                        onClick={handleClearGeminiKey}
+                        className="flex items-center gap-1 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs font-medium text-red-300 hover:bg-red-500/20 transition-colors"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        <span>{isAr ? 'مسح' : 'Clear'}</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleSaveKeys}
+                      className="flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-2 text-xs font-bold text-white shadow-lg shadow-blue-600/30 hover:bg-blue-500 transition-colors"
+                    >
+                      {isSaved ? <Check className="h-3.5 w-3.5 text-emerald-300" /> : <ShieldCheck className="h-3.5 w-3.5" />}
+                      <span>{isSaved ? (isAr ? 'تم الحفظ بنجاح!' : 'Saved!') : (isAr ? 'حفظ المفتاح' : 'Save Key')}</span>
+                    </button>
                   </div>
                 </div>
               </div>
@@ -500,6 +663,102 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </div>
                   );
                 })}
+              </div>
+            </div>
+          )}
+
+          {/* TAB 3: GITHUB & GOOGLE DEPLOYMENT GUIDE */}
+          {activeTab === 'deploy' && (
+            <div className="space-y-5">
+              {/* Alert Header Box */}
+              <div className="rounded-2xl border border-amber-500/30 bg-amber-950/20 p-5 space-y-3">
+                <div className="flex items-start gap-3">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                    <AlertCircle className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-amber-200">
+                      {isAr ? 'لماذا تظهر أحياناً "نتائج غير واقعية" عند الرفع على Google أو GitHub؟' : 'Why do results look generic on deployed external hosting?'}
+                    </h3>
+                    <p className="mt-1 text-xs text-amber-300/80 leading-relaxed">
+                      {isAr
+                        ? 'في بيئة التطوير (البريفيو)، يتصل التطبيق تلقائياً بسيرفر الذكاء الاصطناعي الخاص بـ Google. لكن عند نقل الملفات إلى GitHub ورفعها، يتم إما: (1) رفع ملفات الواجهة فقط دون تشغيل خادم Node.js الخلفي، أو (2) عدم إضافة مفتاح GEMINI_API_KEY في إعدادات الاستضافة. إليك الحلان لتشغيله بكامل طاقته:'
+                        : 'In development preview, the server key is injected automatically. On GitHub / Google Cloud hosting, either the Node server is not started, or GEMINI_API_KEY is not configured in environment variables. Here are the two clean solutions:'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Solution 1: Client-side direct mode (Easiest & Free) */}
+              <div className="rounded-2xl border border-emerald-500/30 bg-emerald-950/15 p-5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500/20 text-emerald-400 text-xs font-bold border border-emerald-500/30">
+                      1
+                    </span>
+                    <h4 className="text-sm font-bold text-white">
+                      {isAr ? 'الحل الأسهل: تفعيل المفتاح المباشر في المتصفح (بدون سيرفر)' : 'Solution 1: Direct Browser Key (Zero-Server Mode)'}
+                    </h4>
+                  </div>
+                  <span className="rounded-full bg-emerald-500/20 px-2.5 py-0.5 text-[10px] font-bold text-emerald-300 border border-emerald-500/30">
+                    {isAr ? 'موصى به للاستضافات الثابتة' : 'Recommended for Static'}
+                  </span>
+                </div>
+
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  {isAr
+                    ? 'إذا كنت ترفع المشروع على GitHub Pages أو Firebase Hosting أو Vercel كصفحة ويب ثابتة، يمكنك وضع مفتاح Google Gemini المجاني في تبويب "مفاتيح الـ API". سيتواصل التطبيق مباشرة وبشكل آمن من متصفحك مع Google Gemini ويمنحك إجابات حقيقية وواقعية وفورية 100%.'
+                    : 'When deploying as static files (GitHub Pages, Firebase, Vercel), simply enter your free Google Gemini API key in the Keys tab. Your browser will query Gemini directly with 100% real live outputs.'}
+                </p>
+
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('keys')}
+                    className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white shadow-lg shadow-emerald-600/30 hover:bg-emerald-500 transition-colors"
+                  >
+                    <KeyRound className="h-4 w-4" />
+                    <span>{isAr ? 'الانتقال لوضع مفتاح Gemini الآن' : 'Go to Keys Tab'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Solution 2: Google Cloud Run Full-Stack Deployment */}
+              <div className="rounded-2xl border border-blue-500/30 bg-blue-950/15 p-5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-blue-500/20 text-blue-400 text-xs font-bold border border-blue-500/30">
+                      2
+                    </span>
+                    <h4 className="text-sm font-bold text-white">
+                      {isAr ? 'الحل الكامل: الرفع على Google Cloud Run كخادم Node.js كامل' : 'Solution 2: Full-Stack on Google Cloud Run'}
+                    </h4>
+                  </div>
+                  <span className="rounded-full bg-blue-500/20 px-2.5 py-0.5 text-[10px] font-bold text-blue-300 border border-blue-500/30">
+                    {isAr ? 'سيرفر متكامل' : 'Production Server'}
+                  </span>
+                </div>
+
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  {isAr
+                    ? 'لتشغيل التطبيق بسيرفره الخلفي المتكامل على Google Cloud Run أو أي خادم سحابي:'
+                    : 'To run the application with its full backend on Google Cloud Run:'}
+                </p>
+
+                <div className="rounded-xl bg-slate-950 p-3.5 border border-slate-800 font-mono text-[11px] text-slate-300 space-y-2">
+                  <div className="text-slate-500"># 1. تثبيت الحزم وبناء المشروع</div>
+                  <div className="text-indigo-400">npm install && npm run build</div>
+                  <div className="text-slate-500 mt-2"># 2. تعيين المتغير البيئي في Cloud Run (Variables & Secrets)</div>
+                  <div className="text-emerald-400">GEMINI_API_KEY=AIzaSy...</div>
+                  <div className="text-slate-500 mt-2"># 3. تشغيل الخادم</div>
+                  <div className="text-indigo-400">npm start</div>
+                </div>
+
+                <p className="text-[11px] text-slate-400">
+                  {isAr
+                    ? '💡 يتضمن المشروع ملف Dockerfile و .env.example جاهزين للاستخدام المباشر مع Google Cloud Build و Cloud Run.'
+                    : '💡 The repo includes ready-to-deploy Dockerfile and .env.example files for seamless Cloud Run deployments.'}
+                </p>
               </div>
             </div>
           )}
