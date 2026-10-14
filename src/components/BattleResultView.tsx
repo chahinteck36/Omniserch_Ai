@@ -156,21 +156,45 @@ export const BattleResultView: React.FC<BattleResultViewProps> = ({
                   </div>
 
                   {/* Model Content */}
-                  <div className="prose prose-invert prose-sm max-w-none text-xs sm:text-sm leading-relaxed prose-p:text-slate-300">
-                    <Markdown>{model.content}</Markdown>
-                  </div>
+                  {model.status === 'unavailable' || model.status === 'error' || !model.content ? (
+                    <div className="my-4 rounded-xl border border-dashed border-amber-500/30 bg-amber-500/5 p-4 text-center">
+                      <div className="mb-1 text-xs font-semibold text-amber-300">
+                        {isAr ? 'المزود غير متاح حالياً' : 'Provider Unavailable'}
+                      </div>
+                      <p className="text-[11px] text-slate-400">
+                        {model.errorMessage ||
+                          (isAr
+                            ? 'لم يتم استدعاء هذا النموذج نظراً لعدم توفر مفتاح المزود في الإعدادات.'
+                            : 'This model was not invoked because the provider API key is not configured.')}
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="prose prose-invert prose-sm max-w-none text-xs sm:text-sm leading-relaxed prose-p:text-slate-300">
+                      <Markdown>{model.content}</Markdown>
+                    </div>
+                  )}
                 </div>
 
                 {/* Model Metadata Footer */}
                 <div className="mt-4 flex items-center justify-between border-t border-slate-800/60 pt-3 text-[11px] text-slate-500">
-                  <span className="flex items-center gap-1">
-                    <Clock className="h-3 w-3 text-slate-400" />
-                    {model.latencyMs}ms
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <Coins className="h-3 w-3 text-indigo-400" />
-                    {model.tokensUsed} tokens
-                  </span>
+                  {model.status === 'success' && model.latencyMs > 0 ? (
+                    <>
+                      <span className="flex items-center gap-1">
+                        <Clock className="h-3 w-3 text-slate-400" />
+                        {model.latencyMs}ms
+                      </span>
+                      {model.tokensUsed > 0 && (
+                        <span className="flex items-center gap-1">
+                          <Coins className="h-3 w-3 text-indigo-400" />
+                          {model.tokensUsed} tokens
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    <span className="text-[10px] text-slate-500 italic">
+                      {isAr ? 'لم يتم احتساب رموز/استهلاك' : 'No tokens consumed'}
+                    </span>
+                  )}
                 </div>
               </div>
             );
@@ -212,17 +236,33 @@ export const BattleResultView: React.FC<BattleResultViewProps> = ({
                     <span className="text-xs font-bold text-white">{active.modelName}</span>
                     <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] text-slate-400">{active.provider}</span>
                   </div>
-                  <button
-                    onClick={() => handleCopy(active.content, active.modelId)}
-                    className="flex items-center gap-1 rounded-lg border border-slate-800 bg-slate-900 px-2.5 py-1.5 text-xs text-slate-300 hover:text-white"
-                  >
-                    {copiedModel === active.modelId ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
-                    <span>{copiedModel === active.modelId ? (isAr ? 'تم النسخ' : 'Copied') : (isAr ? 'نسخ' : 'Copy')}</span>
-                  </button>
+                  {active.content && (
+                    <button
+                      onClick={() => handleCopy(active.content, active.modelId)}
+                      className="flex items-center gap-1 rounded-lg border border-slate-800 bg-slate-900 px-2.5 py-1.5 text-xs text-slate-300 hover:text-white"
+                    >
+                      {copiedModel === active.modelId ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+                      <span>{copiedModel === active.modelId ? (isAr ? 'تم النسخ' : 'Copied') : (isAr ? 'نسخ' : 'Copy')}</span>
+                    </button>
+                  )}
                 </div>
-                <div className="prose prose-invert max-w-none text-sm leading-relaxed prose-p:text-slate-200">
-                  <Markdown>{active.content}</Markdown>
-                </div>
+                {active.status === 'unavailable' || active.status === 'error' || !active.content ? (
+                  <div className="my-6 rounded-xl border border-dashed border-amber-500/30 bg-amber-500/5 p-6 text-center">
+                    <div className="mb-2 text-sm font-semibold text-amber-300">
+                      {isAr ? 'المزود غير متاح حالياً' : 'Provider Unavailable'}
+                    </div>
+                    <p className="text-xs text-slate-400">
+                      {active.errorMessage ||
+                        (isAr
+                          ? 'لم يتم استدعاء هذا النموذج نظراً لعدم توفر مفتاح المزود.'
+                          : 'This model was not invoked because the provider API key is not configured.')}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="prose prose-invert max-w-none text-sm leading-relaxed prose-p:text-slate-200">
+                    <Markdown>{active.content}</Markdown>
+                  </div>
+                )}
               </div>
             );
           })()}

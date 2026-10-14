@@ -77,17 +77,6 @@ export function App() {
       const saved = localStorage.getItem('omnisearch_user_plan');
       if (saved) {
         const parsed = JSON.parse(saved);
-        const emailLower = (parsed.email || '').toLowerCase();
-        if (emailLower === 'gmouhamed36@gmail.com' || emailLower.includes('chahin36')) {
-          return {
-            tier: 'enterprise',
-            name: 'Enterprise VIP (Owner)',
-            email: 'gmouhamed36@gmail.com',
-            totalFreeLimit: FREE_SEARCH_LIMIT,
-            usedSearches: 0,
-            licenseKey: 'OMNI-OWNER-MASTER',
-          };
-        }
         if (parsed.tier === 'free' && parsed.email) {
           parsed.usedSearches = getEmailUsedSearches(parsed.email);
         }
@@ -180,11 +169,9 @@ export function App() {
     setErrorMessage(null);
 
     const activePlan = overridePlan || userPlan;
-    const isOwner =
-      Boolean(activePlan.email && (activePlan.email.toLowerCase() === 'gmouhamed36@gmail.com' || activePlan.email.includes('chahin36')));
 
     // Check if Paid plan has expired by duration!
-    if (!isOwner && activePlan.tier !== 'free' && activePlan.expiresAt) {
+    if (activePlan.tier !== 'free' && activePlan.expiresAt) {
       if (Date.now() >= activePlan.expiresAt) {
         checkAndTriggerExpirationNotice(activePlan, isAr);
         setIsExpiryNoticeOpen(true);
@@ -192,8 +179,8 @@ export function App() {
       }
     }
 
-    // Check Free Plan Requirements and Lifetime Non-Renewing Limits
-    if (!isOwner && activePlan.tier === 'free') {
+    // Check Free Plan Requirements and Limits
+    if (activePlan.tier === 'free') {
       const usedCount = activePlan.email
         ? getEmailUsedSearches(activePlan.email)
         : (activePlan.usedSearches || 0);
@@ -214,6 +201,48 @@ export function App() {
         selectedModels: params.selectedModels,
         file: params.file,
         language,
+        userEmail: activePlan.email,
+        onProgress: (evt) => {
+          if (evt.type === 'phase' && evt.payload) {
+            setCurrentResult((prev) => {
+              if (!prev) {
+                return {
+                  id: `stream_${Date.now()}`,
+                  query: params.query || params.file?.name || 'Research Query',
+                  timestamp: Date.now(),
+                  mode: params.mode,
+                  selectedModels: params.selectedModels,
+                  sources: [],
+                  deepResearchPhases: [evt.payload],
+                };
+              }
+              const existingPhases = prev.deepResearchPhases || [];
+              const phaseIdx = existingPhases.findIndex((p) => p.id === evt.payload.id);
+              const updated = [...existingPhases];
+              if (phaseIdx >= 0) {
+                updated[phaseIdx] = { ...updated[phaseIdx], ...evt.payload };
+              } else {
+                updated.push(evt.payload);
+              }
+              return { ...prev, deepResearchPhases: updated };
+            });
+          } else if (evt.type === 'sources_discovered' && evt.payload?.sources) {
+            setCurrentResult((prev) => (prev ? { ...prev, sources: evt.payload.sources } : prev));
+          } else if (evt.type === 'model_response' && evt.payload) {
+            setCurrentResult((prev) => {
+              if (!prev) return prev;
+              const existing = prev.modelResponses || [];
+              const idx = existing.findIndex((m) => m.modelId === evt.payload.modelId);
+              const updated = [...existing];
+              if (idx >= 0) {
+                updated[idx] = evt.payload;
+              } else {
+                updated.push(evt.payload);
+              }
+              return { ...prev, modelResponses: updated };
+            });
+          }
+        },
       });
 
       const newResult: SearchResult = {
@@ -239,7 +268,7 @@ export function App() {
       setHistory((prev) => [newResult, ...prev.filter((item) => item.id !== newResult.id)]);
 
       // Update Quota Usage
-      if (!isOwner && activePlan.tier === 'free') {
+      if (activePlan.tier === 'free') {
         if (activePlan.email) {
           const newCount = recordEmailSearchUsage(activePlan.email);
           setUserPlan((prev) => ({

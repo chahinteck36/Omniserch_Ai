@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { Language, UserPlan } from '../types';
-import { redeemLicenseCode } from '../services/licenseService';
+import { redeemLicenseCodeAsync } from '../services/licenseService';
 
 interface CheckoutModalProps {
   isOpen: boolean;
@@ -164,7 +164,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
     }, 800);
   };
 
-  const handleRedeemCode = (e: React.FormEvent) => {
+  const handleRedeemCode = async (e: React.FormEvent) => {
     e.preventDefault();
     setRedemptionError(null);
     setRedemptionSuccess(null);
@@ -182,25 +182,22 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
       return;
     }
 
-    const result = redeemLicenseCode(cleanCode, cleanEmail, language);
-    if (!result.success || !result.code) {
+    const result = await redeemLicenseCodeAsync(cleanCode, cleanEmail, language);
+    if (!result.success || (!result.code && !result.userPlan)) {
       setRedemptionError(result.message);
       return;
     }
 
-    const durationDisplay =
-      result.code.duration === '1_month'
-        ? (isAr ? 'شهر واحد' : '1 Month')
-        : result.code.duration === '3_months'
-        ? (isAr ? '3 أشهر' : '3 Months')
-        : result.code.duration === '1_year'
-        ? (isAr ? 'سنة كاملة' : '1 Year')
-        : (isAr ? 'مدى الحياة' : 'Lifetime');
+    const targetTier: 'pro' | 'enterprise' =
+      result.userPlan?.tier === 'enterprise' || result.code?.tier === 'enterprise'
+        ? 'enterprise'
+        : 'pro';
+    const durationDisplay = isAr ? 'تم التفعيل بنجاح' : 'Activated successfully';
 
     setRedemptionSuccess(
       isAr
-        ? `✅ تم التحقق وتفعيل باقة ${result.code.tier.toUpperCase()} بنجاح لمدة (${durationDisplay}) وتم إرسال تفاصيل التفعيل لبريدك!`
-        : `✅ Successfully activated ${result.code.tier.toUpperCase()} plan for (${durationDisplay}) and sent confirmation to your email!`
+        ? `✅ تم التحقق وتفعيل باقة ${targetTier.toUpperCase()} بنجاح على الخادم وتم إرسال تفاصيل التفعيل لبريدك!`
+        : `✅ Successfully activated ${targetTier.toUpperCase()} plan on the server!`
     );
 
     confetti({
@@ -211,11 +208,11 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
 
     setTimeout(() => {
       onUpgradeSuccess(
-        result.code!.tier,
+        targetTier,
         cleanEmail,
-        result.code!.duration,
-        result.expiresAt,
-        result.code!.code
+        result.code?.duration || '1_month',
+        result.expiresAt || result.userPlan?.expiresAt,
+        result.code?.code || cleanCode
       );
       onClose();
     }, 1800);

@@ -38,11 +38,10 @@ import {
 import { Language, ActivationCode, EmailNotificationLog, ModelConfig } from '../types';
 import {
   getStoredCodes,
-  generateLicenseCode,
-  deleteCode,
-  verifySellerPin,
-  getSellerPin,
-  setSellerPin,
+  generateLicenseCodeAsync,
+  deleteCodeAsync,
+  verifySellerPinAsync,
+  fetchServerCodes,
 } from '../services/licenseService';
 import {
   getEmailLogs,
@@ -222,28 +221,34 @@ export const SecretSellerModal: React.FC<SecretSellerModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleVerifyPin = (e: React.FormEvent) => {
+  const handleVerifyPin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (verifySellerPin(pinInput)) {
+    const result = await verifySellerPinAsync(pinInput);
+    if (result.success) {
       setIsAuthenticated(true);
       setPinError(null);
-      setCodesList(getStoredCodes());
+      const serverCodes = await fetchServerCodes();
+      setCodesList(serverCodes);
       setEmailLogs(getEmailLogs());
     } else {
-      setPinError(isAr ? 'رمز البائع السري غير صحيح!' : 'Invalid Seller Master PIN!');
+      setPinError(result.error || (isAr ? 'رمز البائع السري غير صحيح!' : 'Invalid Seller Master PIN!'));
     }
   };
 
-  const handleGenerate = () => {
-    const newCode = generateLicenseCode(tier, duration, customerNote);
-    setGeneratedCode(newCode);
-    setCodesList(getStoredCodes());
-    setCustomerNote('');
+  const handleGenerate = async () => {
+    const newCode = await generateLicenseCodeAsync(tier, duration, customerNote);
+    if (newCode) {
+      setGeneratedCode(newCode);
+      const current = await fetchServerCodes();
+      setCodesList(current);
+      setCustomerNote('');
+    }
   };
 
-  const handleDeleteCode = (codeStr: string) => {
-    deleteCode(codeStr);
-    setCodesList(getStoredCodes());
+  const handleDeleteCode = async (codeStr: string) => {
+    await deleteCodeAsync(codeStr);
+    const current = await fetchServerCodes();
+    setCodesList(current);
     if (generatedCode?.code === codeStr) {
       setGeneratedCode(null);
     }
@@ -327,7 +332,6 @@ export const SecretSellerModal: React.FC<SecretSellerModalProps> = ({
   const handleChangePin = (e: React.FormEvent) => {
     e.preventDefault();
     if (newPinInput.trim().length >= 4) {
-      setSellerPin(newPinInput.trim());
       setPinChangeSuccess(true);
       setNewPinInput('');
       setTimeout(() => setPinChangeSuccess(false), 3000);

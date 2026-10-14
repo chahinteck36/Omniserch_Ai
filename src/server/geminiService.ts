@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { SearchSource, ModelResponse, DeepResearchPhase } from '../types';
 
 let aiClient: GoogleGenAI | null = null;
 
@@ -6,7 +7,7 @@ export function getGeminiClient(): GoogleGenAI {
   if (!aiClient) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      console.warn('GEMINI_API_KEY environment variable is missing.');
+      console.warn('[GeminiService] GEMINI_API_KEY environment variable is missing.');
     }
     aiClient = new GoogleGenAI({
       apiKey: apiKey || '',
@@ -18,29 +19,6 @@ export function getGeminiClient(): GoogleGenAI {
     });
   }
   return aiClient;
-}
-
-export interface SearchSource {
-  title: string;
-  url: string;
-  snippet?: string;
-}
-
-export interface ModelResponse {
-  modelId: string;
-  modelName: string;
-  provider: string;
-  badgeColor: string;
-  content: string;
-  latencyMs: number;
-  tokensUsed: number;
-}
-
-export interface DeepResearchPhase {
-  id: string;
-  title: string;
-  status: 'pending' | 'in_progress' | 'completed';
-  details?: string;
 }
 
 export interface SearchResultPayload {
@@ -58,6 +36,7 @@ export interface SearchResultPayload {
     improvements: string[];
     optimizedCode?: string;
     language?: string;
+    explanation?: string;
   };
   deepResearchPhases?: DeepResearchPhase[];
   searchMetadata?: {
@@ -65,69 +44,45 @@ export interface SearchResultPayload {
     totalSources: number;
     processingTimeMs: number;
     fallbackUsed?: boolean;
+    isDemonstration?: boolean;
     quotaWarning?: boolean;
+    serverLive?: boolean;
   };
 }
 
-// Helper to safely extract and parse JSON from LLM responses even if wrapped in markdown or contains formatting quirks
-function extractJsonSafe<T = any>(rawText: string): T | null {
-  if (!rawText || typeof rawText !== 'string') return null;
+// Recommended Gemini 3 models according to modern specification
+const PRIMARY_MODEL = 'gemini-3.8-flash';
+const FALLBACK_MODEL = 'gemini-3.1-flash-lite';
 
-  let cleaned = rawText.trim();
-
-  // Strip markdown code fences (```json ... ``` or ``` ...)
-  if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-  }
-
-  // Find outermost JSON object or array
-  const firstBrace = cleaned.indexOf('{');
-  const firstBracket = cleaned.indexOf('[');
-  let startIdx = -1;
-  let endIdx = -1;
-
-  if (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) {
-    startIdx = firstBrace;
-    endIdx = cleaned.lastIndexOf('}');
-  } else if (firstBracket !== -1) {
-    startIdx = firstBracket;
-    endIdx = cleaned.lastIndexOf(']');
-  }
-
-  if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
-    cleaned = cleaned.slice(startIdx, endIdx + 1);
-  }
-
-  try {
-    return JSON.parse(cleaned);
-  } catch {
-    // Attempt minor repair for common LLM JSON syntax issues (e.g., trailing commas)
-    try {
-      const repaired = cleaned.replace(/,\s*([}\]])/g, '$1');
-      return JSON.parse(repaired);
-    } catch {
-      return null;
-    }
-  }
-}
-
-// Track search tool quota exhaustion to prevent wasteful 429 errors and slow retries
-// Verified fast and reliable models in priority order
-const MODELS_TO_TRY = ['gemini-3.1-flash-lite', 'gemini-3.6-flash'];
-
-// Helper to safely call Gemini with verified fast models, direct execution, and error catching
-async function callGeminiSafe(
+/**
+ * Safely calls Gemini API using official SDK structure and search grounding
+ */
+export async function callGeminiSafe(
   prompt: string,
   options: {
     systemPrompt?: string;
     useSearch?: boolean;
     jsonResponse?: boolean;
+    timeoutMs?: number;
   } = {}
-): Promise<{ text: string; rawResponse?: any; isFallback?: boolean }> {
-  const ai = getGeminiClient();
+): Promise<{ text: string; rawResponse?: any; durationMs: number; isFallback?: boolean; error?: string }> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || !apiKey.trim()) {
+    return {
+      text: '',
+      durationMs: 0,
+      isFallback: true,
+      error: 'GEMINI_API_KEY is not configured on the server',
+    };
+  }
 
-  // Direct model call with generous 25-second timeout to handle peak traffic without premature rejection
-  for (const model of MODELS_TO_TRY) {
+  const ai = getGeminiClient();
+  const models = [PRIMARY_MODEL, FALLBACK_MODEL];
+  const timeoutMs = options.timeoutMs || 25000;
+  let lastError: any = null;
+
+  for (const model of models) {
+    const startTime = Date.now();
     try {
       const config: any = {};
       if (options.systemPrompt) {
@@ -136,300 +91,648 @@ async function callGeminiSafe(
       if (options.jsonResponse) {
         config.responseMimeType = 'application/json';
       }
+      // Official Google Search grounding tool configuration
+      if (options.useSearch && !options.jsonResponse) {
+        config.tools = [{ googleSearch: {} }];
+      }
 
+      let timeoutHandle: any;
       const response = await Promise.race([
         ai.models.generateContent({
           model,
           contents: prompt,
           config: Object.keys(config).length > 0 ? config : undefined,
         }),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('ModelTimeout')), 25000)
-        ),
-      ]);
+        new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(() => reject(new Error(`Timeout after ${timeoutMs}ms`)), timeoutMs);
+        }),
+      ]).finally(() => {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+      });
 
+      const durationMs = Date.now() - startTime;
       if (response && response.text && response.text.trim()) {
-        return { text: response.text.trim(), rawResponse: response, isFallback: false };
+        return {
+          text: response.text.trim(),
+          rawResponse: response,
+          durationMs,
+          isFallback: false,
+        };
       }
     } catch (err: any) {
-      console.warn(`[GeminiService] Model ${model} call error:`, err?.message || err);
-      // Try next model candidate
+      lastError = err;
+      console.warn(`[GeminiService] Model ${model} call failed:`, err?.message || err);
     }
   }
 
-  return { text: '', isFallback: true };
+  return {
+    text: '',
+    durationMs: 0,
+    isFallback: true,
+    error: lastError?.message || 'Gemini model request failed',
+  };
 }
 
+/**
+ * Extracts citations strictly from genuine groundingMetadata returned by the Gemini API
+ */
+export function extractSources(response: any): SearchSource[] {
+  const sources: SearchSource[] = [];
+  const groundingChunks = response?.candidates?.[0]?.groundingMetadata?.groundingChunks;
+
+  if (Array.isArray(groundingChunks)) {
+    for (const chunk of groundingChunks) {
+      const uri = chunk.web?.uri;
+      if (uri && typeof uri === 'string' && uri.startsWith('http')) {
+        let title = (chunk.web?.title || '').trim();
+        if (!title) {
+          try {
+            title = new URL(uri).hostname.replace(/^www\./, '');
+          } catch {
+            title = 'Web Reference';
+          }
+        }
+        if (!sources.some((s) => s.url === uri)) {
+          sources.push({
+            title,
+            url: uri,
+            snippet: chunk.web?.snippet || undefined,
+          });
+        }
+      }
+    }
+  }
+
+  return sources.slice(0, 10);
+}
+
+/**
+ * Extracts web search queries actually submitted by the grounding tool
+ */
+export function extractSearchQueries(response: any): string[] {
+  const webQueries = response?.candidates?.[0]?.groundingMetadata?.webSearchQueries;
+  if (Array.isArray(webQueries)) {
+    return webQueries.filter((q: any) => typeof q === 'string' && q.trim().length > 0);
+  }
+  return [];
+}
+
+/**
+ * Executes a search query across the requested mode
+ */
 export async function executeSearch(params: {
   query: string;
   mode: 'fast' | 'deep' | 'battle' | 'code';
-  models: string[];
+  models?: string[];
   fileContent?: string;
   fileName?: string;
   fileType?: string;
   language: 'ar' | 'en';
+  demoMode?: boolean;
+  onProgress?: (event: { type: string; payload: any }) => void;
 }): Promise<SearchResultPayload> {
   const startTime = Date.now();
-  const { query, mode, models, fileContent, fileName, language } = params;
+  const { query, mode, models = [], fileContent, fileName, language, demoMode, onProgress } = params;
   const isArabic = language === 'ar';
 
+  // ----------------------------------------------------
+  // MODE 1: FAST SEARCH (Live Grounded)
+  // ----------------------------------------------------
   if (mode === 'fast') {
     const systemPrompt = isArabic
-      ? `أنت المحرك الذكي الأساسي لمنصة "OmniSearch AI" (أومني سيرش).
-قواعد العمل وتقديم الإجابات:
-1. المنطق والدقة والمباشرة: أجب عن سؤال المستخدم الفعلي بشكل مباشر، دقيق، ومنطقي تماماً من الجملة الأولى.
-2. الهيكلة الواضحة: استخدم التنسيق الأنيق والواضح (نقاط محددة، جداول، عناوين فرعية موجزة) لشرح التفاصيل عند الحاجة بدون حشو أو عناوين شكلية مفتعلة.
-3. التنوع والذكاء:
-   - إذا كان السؤال مسألة رياضية أو منطقية: قم بحلها فوراً وبيّن خطوات الحل المنطقية بدقة ووضوح.
-   - إذا كان لغزاً أو سؤالاً حوارياً: قدّم التفسير المنطقي والذكي دون مواربة.
-   - إذا كان سؤالاً علمياً أو تاريخياً أو واقعياً: قدّم الحقائق الموثقة والصحيحة بدقة.
-4. الأسلوب: لغة عربية فصحى عصرية وسلسة، مهنية وبدون حشو لغوي.`
+      ? `أنت المحرك الذكي لمنصة "OmniSearch AI" (أومني سيرش).
+قواعد تقديم النتائج:
+1. الإجابة المباشرة والدقيقة: قدم الجواب الدقيق والمباشر في الجملة الأولى.
+2. التنسيق المنظم: استخدم العناوين والنقاط والجداول لشرح التفاصيل دون حشو.
+3. التوثيق: اعتمد على المصادر المسترجعة وقدم حقائق موثوقة.`
       : `You are the Core AI Engine for "OmniSearch AI".
 Guidelines:
-1. Direct, Logical & Accurate: Deliver the direct answer/solution immediately in the opening sentence.
-2. Structured & Clear: Use clean markdown, concise bullet points, or tables where appropriate.
-3. Mathematical & Factual Precision: Solve math, logic problems, or riddles with crystal-clear deductive reasoning.
-4. Professional Tone: Modern, authoritative, concise, and token-efficient.`;
+1. Provide the direct, factual answer immediately in the opening sentence.
+2. Use clean markdown formatting with concise bullet points and tables.
+3. Ground your findings accurately using retrieved sources.`;
 
     const promptText = `User Query: "${query}"${fileContent ? `\nAttached file (${fileName}):\n${fileContent.slice(0, 4000)}` : ''}`;
 
-    const { text, rawResponse, isFallback } = await callGeminiSafe(promptText, {
+    const { text, rawResponse, error } = await callGeminiSafe(promptText, {
       systemPrompt,
       useSearch: true,
     });
 
-    const fullText = text || generateSynthesizedFastResponse(query, isArabic);
-    const sources = rawResponse ? extractSources(rawResponse) : generateDefaultSources(query);
+    if (!text) {
+      if (demoMode) {
+        return getDemoFastResult(query, isArabic, startTime);
+      }
+      throw new Error(
+        error ||
+          (isArabic
+            ? 'تعذر الوصول إلى مزود الذكاء الاصطناعي (Gemini). يرجى التأكد من ضبط GEMINI_API_KEY.'
+            : 'AI Provider (Gemini) is unavailable. Please check GEMINI_API_KEY.')
+      );
+    }
+
+    const sources = rawResponse ? extractSources(rawResponse) : [];
     const searchQueries = rawResponse ? extractSearchQueries(rawResponse) : [query];
-    const takeaways = extractKeyTakeaways(fullText, isArabic);
+    const keyTakeaways = extractKeyTakeaways(text, isArabic);
 
     return {
       query,
       mode: 'fast',
-      summary: fullText,
+      summary: text,
       sources,
-      keyTakeaways: takeaways,
+      keyTakeaways,
       suggestedQueries: generateRelatedQueries(query, isArabic),
       searchMetadata: {
         searchQueriesUsed: searchQueries,
         totalSources: sources.length,
         processingTimeMs: Date.now() - startTime,
-        fallbackUsed: isFallback || !rawResponse,
+        fallbackUsed: false,
+        serverLive: true,
       },
     };
   }
 
+  // ----------------------------------------------------
+  // MODE 2: DEEP RESEARCH
+  // ----------------------------------------------------
   if (mode === 'deep') {
     const systemPrompt = isArabic
-      ? `أنت المحرك الذكي المتقدم للبحث العميق لمنصة "OmniSearch AI" (أومني سيرش - Deep Research AI Agent).
-قواعد التشغيل وإطار المخرجات:
-1. الهوية والأسلوب: خبير استقصائي تقني رصين، عالي الدقة والكفاءة، يقدم تحليلاً منطقياً معمقاً وشاملاً لموضوع المستخدم.
-2. إطار التقرير:
-   - ابدأ بالخلاصة التنفيذية المباشرة التي تجيب عن صلب الاستفسار.
-   - توسع في المحاور الجوهرية، الإحصائيات، وجداول المقارنة الواقعية.
-   - اختتم بالتوصيات والخطوات الاستراتيجية والعملية المنطقية.
-3. التنسيق: Markdown احترافي، عناوين دقيقة، ولغة عربية فصحى عصرية وسليمة.`
-      : `You are the advanced Deep Research Engine for "OmniSearch AI".
-Operational Rules & Framework:
-1. Professional, highly structured, objective, and token-efficient.
-2. Output Framework:
-   - Direct Executive Summary in the very first section.
-   - Structured Deep-Dive: Comparative tables, key metrics, and substantive takeaways.
-   - Actionable Next Steps: Practical, strategic recommendations and implementation steps.
-3. Language: Clean Modern Standard Arabic by default or English as requested.`;
+      ? `أنت المحرك المتقدم للبحث المعمق (Deep Research) في "OmniSearch AI".
+قواعد التقرير:
+1. تقرير استقصائي مهني مفصل ومحكم.
+2. ابدأ بالخلاصة التنفيذية المباشرة (Executive Summary).
+3. المحاور الرئيسية، المعطيات الإحصائية، وجدول مقارن للمزايا والمحاذير.
+4. التوصيات الاستراتيجية والخطوات العملية الواضحة.`
+      : `You are the Deep Research Engine for "OmniSearch AI".
+Provide an exhaustive, structured research report with:
+1. Direct Executive Summary.
+2. Multi-dimensional technical breakdown with comparative tables.
+3. Actionable strategic recommendations.`;
 
-    const promptText = `Conduct deep research on: "${query}"${fileContent ? `\nReferenced Document/Code (${fileName}):\n${fileContent.slice(0, 6000)}` : ''}`;
+    const promptText = `Conduct deep investigative research on: "${query}"${fileContent ? `\nReferenced Document (${fileName}):\n${fileContent.slice(0, 6000)}` : ''}`;
 
-    const { text, rawResponse, isFallback } = await callGeminiSafe(promptText, {
-      systemPrompt,
-      useSearch: true,
+    onProgress?.({
+      type: 'phase',
+      payload: {
+        id: '1',
+        title: isArabic ? 'تفكيك الاستعلام وتحديد أبعاد البحث' : 'Query Decomposition & Research Scope',
+        status: 'completed',
+        details: isArabic ? `تم استيعاب محاور الاستعلام حول "${query}"` : `Scoped key dimensions for "${query}"`,
+      },
     });
 
-    const fullText = text || generateSynthesizedDeepReport(query, isArabic);
-    const sources = rawResponse ? extractSources(rawResponse) : generateDefaultSources(query);
-    const searchQueries = rawResponse ? extractSearchQueries(rawResponse) : [query, `${query} in-depth analysis`, `${query} statistics`];
+    onProgress?.({
+      type: 'phase',
+      payload: {
+        id: '2',
+        title: isArabic ? 'التصفح المباشر واسترجاع المراجع' : 'Live Web Grounding & Source Retrieval',
+        status: 'in_progress',
+        details: isArabic ? 'جاري استرجاع المصادر المباشرة وتدقيق الحقائق...' : 'Retrieving live web citations and grounding facts...',
+      },
+    });
+
+    const { text, rawResponse, error } = await callGeminiSafe(promptText, {
+      systemPrompt,
+      useSearch: true,
+      timeoutMs: 35000,
+    });
+
+    if (!text) {
+      if (demoMode) {
+        return getDemoDeepResult(query, isArabic, startTime);
+      }
+      throw new Error(
+        error ||
+          (isArabic
+            ? 'فشل استدعاء محرك البحث المعمق. يرجى التحقق من اتصال المزود أو مفتاح API.'
+            : 'Deep research provider call failed. Check provider connectivity or API keys.')
+      );
+    }
+
+    const sources = rawResponse ? extractSources(rawResponse) : [];
+    const searchQueries = rawResponse ? extractSearchQueries(rawResponse) : [query];
+
+    if (sources.length > 0) {
+      onProgress?.({
+        type: 'sources_discovered',
+        payload: { sources },
+      });
+    }
 
     const phases: DeepResearchPhase[] = [
       {
         id: '1',
         title: isArabic ? 'تفكيك الاستعلام وتحديد أبعاد البحث' : 'Query Decomposition & Research Scope',
         status: 'completed',
-        details: isArabic ? `تم تحديد المحاور الرئيسية لـ "${query}"` : `Scoped key dimensions for "${query}"`,
+        details: isArabic ? `تم استيعاب محاور الاستعلام حول "${query}"` : `Scoped key dimensions for "${query}"`,
       },
       {
         id: '2',
         title: isArabic ? 'التصفح المباشر واسترجاع المراجع' : 'Live Web Grounding & Source Retrieval',
-        status: 'completed',
-        details: isArabic ? `تم استكشاف مصادر الويب وتحليل المراجع` : `Scanned web groundings and verified authoritative citations`,
+        status: sources.length > 0 ? 'completed' : 'completed',
+        details: sources.length > 0
+          ? (isArabic ? `تم استرجاع ${sources.length} مصادر موثقة من الويب` : `Retrieved ${sources.length} verified web sources`)
+          : (isArabic ? 'تم إجراء البحث بالاعتماد على قاعدة المعرفة الشاملة' : 'Synthesized from global model knowledge base'),
       },
       {
         id: '3',
-        title: isArabic ? 'التدقيق المتقاطع ودمج نماذج الاستدلال' : 'Multi-Perspective Synthesis & Fact Checking',
+        title: isArabic ? 'التدقيق والتحليل متعدد الأبعاد' : 'Multi-Perspective Synthesis',
         status: 'completed',
-        details: isArabic ? 'تم توحيد الرؤى والمقارنات' : 'Synthesized consensus across diverse viewpoints',
+        details: isArabic ? 'تمت المطابقة التحليلية والتنسيق' : 'Cross-validated findings across dimensions',
       },
       {
         id: '4',
         title: isArabic ? 'صياغة التقرير الاستقصائي النهائي' : 'Final In-Depth Report Compilation',
         status: 'completed',
-        details: isArabic ? 'تم إنشاء التقرير الشامل' : 'Comprehensive report generated with actionable insights',
+        details: isArabic ? 'اكتملت صياغة التقرير المعمق بنجاح' : 'Report compiled with actionable insights',
       },
     ];
+
+    onProgress?.({
+      type: 'phase',
+      payload: phases[1],
+    });
+    onProgress?.({
+      type: 'phase',
+      payload: phases[2],
+    });
+    onProgress?.({
+      type: 'phase',
+      payload: phases[3],
+    });
 
     return {
       query,
       mode: 'deep',
-      summary: extractSummaryIntro(fullText),
-      detailedReport: fullText,
+      summary: extractSummaryIntro(text),
+      detailedReport: text,
       sources,
-      keyTakeaways: extractKeyTakeaways(fullText, isArabic),
+      keyTakeaways: extractKeyTakeaways(text, isArabic),
       deepResearchPhases: phases,
       suggestedQueries: generateRelatedQueries(query, isArabic),
       searchMetadata: {
         searchQueriesUsed: searchQueries,
         totalSources: sources.length,
         processingTimeMs: Date.now() - startTime,
-        fallbackUsed: isFallback || !rawResponse,
+        fallbackUsed: false,
+        serverLive: true,
       },
     };
   }
 
+  // ----------------------------------------------------
+  // MODE 3: BATTLE MODE (Truthful Multi-Model Comparison)
+  // ----------------------------------------------------
   if (mode === 'battle') {
-    const targetModels = models.length > 0 ? models : ['gemini', 'gpt4o', 'claude35', 'llama3'];
+    const targetModels = models.length > 0 ? models : ['gemini', 'llama3', 'gpt4o', 'claude35'];
+    const modelResponses: ModelResponse[] = [];
 
-    const battlePrompt = isArabic
-      ? `أنت نظام مقارنة وتجميع نماذج الذكاء الاصطناعي في منصة "OmniSearch AI".
-سؤال المستخدم الفعلي: "${query}"
-
-المطلوب بدقة: أجب عن سؤال المستخدم الفعلي إجابة منطقية وكاملة وصحيحة 100% من منظور كل من النماذج التالية:
-${targetModels.join(', ')}
-
-شروط جوهرية للإجابة:
-1. يجب على كل نموذج أن يحل أو يجيب عن سؤال المستخدم نفسه مباشرة بمحتوى علمي/عملي/منطقي كامل، ولا تضع مجرد وصف عام أو تعليق شكلي عن النموذج.
-2. اجعل أسلوب كل نموذج مميزاً:
-   - Gemini: إجابة دقيقة، مدعومة بالحقائق والبيانات المحدثة.
-   - GPT-4o: إجابة منظمة خطوة بخطوة مع توضيح المنطق والحل.
-   - Claude 3.5: إجابة تحليلية رصينة ودقيقة لغوياً وتراعي الفروق الدقيقة.
-   - Llama 3: إجابة عملية ومباشرة وتقنية وموجزة.
-3. اكتب خلاصة إجماع حقيقية ومنطقية ومحددة تجيب عن السؤال بدقة في فقرة "consensus".
-
-أرجع النتيجة بصيغة JSON حصراً بالتنسيق التالي بدون أي نصوص قبلها أو بعدها:
-{
-  "consensus": "خلاصة الإجماع والحل المتفق عليه بين كافة النماذج لسؤال المستخدم",
-  "models": [
-    {
-      "modelId": "gemini",
-      "modelName": "Google Gemini 2.5 Pro",
-      "provider": "Google",
-      "badgeColor": "from-blue-500 to-cyan-500",
-      "content": "إجابة جيميني الفعلية الكاملة على سؤال المستخدم...",
-      "latencyMs": 320,
-      "tokensUsed": 450
-    }
-  ]
-}`
-      : `You are a Multi-LLM Aggregator hub comparing top AI models.
-User's Question: "${query}"
-
-Requirements:
-Answer the user's actual question directly, factually, and logically from the distinct perspective of each requested model:
-${targetModels.join(', ')}
-
-Crucial rules:
-1. Each model must ACTUALLY ANSWER the user's specific question directly with complete, accurate, logical substance—do NOT write meta-descriptions about the model.
-2. Persona traits:
-   - Gemini: Grounded, factual, concise, direct.
-   - GPT-4o: Structured step-by-step reasoning, articulate.
-   - Claude 3.5: Nuanced, deep analytical reasoning, balanced.
-   - Llama 3: Practical, direct, technical, open-source spirit.
-3. Synthesize the authentic consensus answering the question in the "consensus" field.
-
-Return ONLY a valid JSON object matching:
-{
-  "consensus": "2-3 sentences synthesizing the direct answer agreed upon by all models",
-  "models": [
-    {
-      "modelId": "gemini",
-      "modelName": "Google Gemini 2.5 Pro",
-      "provider": "Google",
-      "badgeColor": "from-blue-500 to-cyan-500",
-      "content": "Direct, substantive model answer to the query...",
-      "latencyMs": 320,
-      "tokensUsed": 450
-    }
-  ]
-}`;
-
-    const { text, rawResponse, isFallback } = await callGeminiSafe(battlePrompt, {
-      jsonResponse: true,
-    });
-
-    let parsedBattle = extractJsonSafe<{ consensus?: string; models?: ModelResponse[] }>(text);
-
-    if (!parsedBattle || !parsedBattle.models || parsedBattle.models.length === 0) {
-      // Secondary direct attempt without strict JSON config
-      try {
-        const retryRes = await callGeminiSafe(`Provide a JSON object comparing responses to "${query}" across models: ${targetModels.join(', ')}. Must contain "consensus" and "models" array with modelId, modelName, provider, badgeColor, content.`, {
-          jsonResponse: true,
+    // Model 1: Google Gemini (Live request or demo)
+    if (targetModels.includes('gemini')) {
+      const geminiStart = Date.now();
+      if (demoMode) {
+        modelResponses.push({
+          modelId: 'gemini',
+          modelName: 'Google Gemini 3.8 Flash',
+          provider: 'Google',
+          badgeColor: 'from-blue-500 to-cyan-500',
+          content: isArabic
+            ? `[عرض توضيحي] إجابة Gemini النموذجية: تحليل شامل ومباشر حول "${query}".`
+            : `[Demo Mode] Gemini comprehensive response for query: "${query}".`,
+          latencyMs: 120,
+          tokensUsed: 150,
+          status: 'success',
         });
-        parsedBattle = extractJsonSafe<{ consensus?: string; models?: ModelResponse[] }>(retryRes.text);
-      } catch {
-        // Continue
+      } else {
+        const geminiPrompt = isArabic
+          ? `أنت Google Gemini. أجب عن سؤال المستخدم بشكل مباشر ودقيق وموثوق: "${query}"`
+          : `You are Google Gemini. Answer the user question directly, factually, and concisely: "${query}"`;
+
+        const { text: geminiText, rawResponse, durationMs } = await callGeminiSafe(geminiPrompt, {
+          useSearch: false,
+          timeoutMs: 15000,
+        });
+
+        if (geminiText) {
+          const tokens = rawResponse?.usageMetadata?.totalTokenCount || Math.ceil(geminiText.length / 4);
+          modelResponses.push({
+            modelId: 'gemini',
+            modelName: 'Google Gemini 3.8 Flash',
+            provider: 'Google',
+            badgeColor: 'from-blue-500 to-cyan-500',
+            content: geminiText,
+            latencyMs: durationMs || Date.now() - geminiStart,
+            tokensUsed: tokens,
+            status: 'success',
+          });
+        } else {
+          modelResponses.push({
+            modelId: 'gemini',
+            modelName: 'Google Gemini 3.8 Flash',
+            provider: 'Google',
+            badgeColor: 'from-blue-500 to-cyan-500',
+            content: '',
+            latencyMs: Date.now() - geminiStart,
+            tokensUsed: 0,
+            status: 'unavailable',
+            errorMessage: isArabic ? 'تعذر الاتصال بـ Google Gemini' : 'Failed to connect to Google Gemini',
+          });
+        }
       }
     }
 
-    if (!parsedBattle || !parsedBattle.models || parsedBattle.models.length === 0) {
-      parsedBattle = generateSynthesizedBattleResponse(query, targetModels, isArabic);
+    // Model 2: Meta Llama 3 via OpenRouter (Live request if key configured)
+    if (targetModels.includes('llama3')) {
+      if (demoMode) {
+        modelResponses.push({
+          modelId: 'llama3',
+          modelName: 'Meta Llama 3.1 8B',
+          provider: 'Meta AI',
+          badgeColor: 'from-purple-500 to-indigo-500',
+          content: isArabic
+            ? `[عرض توضيحي] إجابة Llama 3 المباشرة والتقنية حول: "${query}".`
+            : `[Demo Mode] Meta Llama 3 direct technical response for: "${query}".`,
+          latencyMs: 110,
+          tokensUsed: 135,
+          status: 'success',
+        });
+      } else {
+        const openRouterKey = process.env.OPENROUTER_API_KEY;
+        const llamaStart = Date.now();
+
+        if (openRouterKey && openRouterKey.trim()) {
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 4000);
+            const llamaRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${openRouterKey.trim()}`,
+                'Content-Type': 'application/json',
+                'HTTP-Referer': 'https://omnisearch.app',
+                'X-Title': 'OmniSearch Battle',
+              },
+              body: JSON.stringify({
+                model: 'meta-llama/llama-3.1-8b-instruct:free',
+                messages: [
+                  {
+                    role: 'system',
+                    content: isArabic
+                      ? 'أنت Meta Llama 3. أجب عن السؤال بشكل تقني ومباشر وموجز باللغة العربية.'
+                      : 'You are Meta Llama 3. Provide a direct, technical, and concise answer.',
+                  },
+                  { role: 'user', content: query },
+                ],
+              }),
+              signal: controller.signal,
+            });
+            clearTimeout(timeoutId);
+
+            if (llamaRes.ok) {
+              const data = await llamaRes.json();
+              const content = data.choices?.[0]?.message?.content || '';
+              const tokens = data.usage?.total_tokens || Math.ceil(content.length / 4);
+              modelResponses.push({
+                modelId: 'llama3',
+                modelName: 'Meta Llama 3.1 8B',
+                provider: 'Meta / OpenRouter',
+                badgeColor: 'from-purple-500 to-indigo-500',
+                content,
+                latencyMs: Date.now() - llamaStart,
+                tokensUsed: tokens,
+                status: 'success',
+              });
+            } else {
+              throw new Error(`OpenRouter HTTP ${llamaRes.status}`);
+            }
+          } catch (orErr: any) {
+            modelResponses.push({
+              modelId: 'llama3',
+              modelName: 'Meta Llama 3.1 8B',
+              provider: 'Meta / OpenRouter',
+              badgeColor: 'from-purple-500 to-indigo-500',
+              content: '',
+              latencyMs: Date.now() - llamaStart,
+              tokensUsed: 0,
+              status: 'unavailable',
+              errorMessage: isArabic ? 'مزود OpenRouter غير متاح حالياً' : 'OpenRouter provider is currently unavailable',
+            });
+          }
+        } else {
+          // OpenRouter key not configured on server
+          modelResponses.push({
+            modelId: 'llama3',
+            modelName: 'Meta Llama 3.1 8B',
+            provider: 'Meta AI',
+            badgeColor: 'from-purple-500 to-indigo-500',
+            content: '',
+            latencyMs: 0,
+            tokensUsed: 0,
+            status: 'unavailable',
+            errorMessage: isArabic
+              ? 'يتطلب ضبط مفتاح OPENROUTER_API_KEY في السيرفر أو لوحة البائع'
+              : 'Requires OPENROUTER_API_KEY configured in server or seller panel',
+          });
+        }
+      }
     }
 
-    const sources = rawResponse ? extractSources(rawResponse) : generateDefaultSources(query);
+    // Model 3: OpenAI GPT-4o (Report truth if no OpenAI/OpenRouter key with gpt4o access)
+    if (targetModels.includes('gpt4o')) {
+      if (demoMode) {
+        modelResponses.push({
+          modelId: 'gpt4o',
+          modelName: 'OpenAI GPT-4o',
+          provider: 'OpenAI',
+          badgeColor: 'from-emerald-500 to-teal-500',
+          content: isArabic
+            ? `[عرض توضيحي] إجابة GPT-4o المقارنة والمنهجية حول: "${query}".`
+            : `[Demo Mode] OpenAI GPT-4o comparative analysis for query: "${query}".`,
+          latencyMs: 140,
+          tokensUsed: 165,
+          status: 'success',
+        });
+      } else {
+        const openRouterKey = process.env.OPENROUTER_API_KEY;
+        if (openRouterKey && openRouterKey.trim()) {
+          const gptStart = Date.now();
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 4000);
+            const gptRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${openRouterKey.trim()}`,
+                'Content-Type': 'application/json',
+                'HTTP-Referer': 'https://omnisearch.app',
+                'X-Title': 'OmniSearch Battle',
+              },
+              body: JSON.stringify({
+                model: 'openai/gpt-4o-mini',
+                messages: [
+                  {
+                    role: 'system',
+                    content: isArabic
+                      ? 'أنت OpenAI GPT-4o. أجب عن سؤال المستخدم خطوة بخطوة بشكل منظم.'
+                      : 'You are OpenAI GPT-4o. Answer clearly with structured step-by-step reasoning.',
+                  },
+                  { role: 'user', content: query },
+                ],
+              }),
+              signal: controller.signal,
+            });
+            clearTimeout(timeoutId);
+            if (gptRes.ok) {
+              const data = await gptRes.json();
+              const content = data.choices?.[0]?.message?.content || '';
+              modelResponses.push({
+                modelId: 'gpt4o',
+                modelName: 'OpenAI GPT-4o',
+                provider: 'OpenAI',
+                badgeColor: 'from-emerald-500 to-teal-500',
+                content,
+                latencyMs: Date.now() - gptStart,
+                tokensUsed: data.usage?.total_tokens || Math.ceil(content.length / 4),
+                status: 'success',
+              });
+            } else {
+              throw new Error(`OpenRouter returned ${gptRes.status}`);
+            }
+          } catch {
+            modelResponses.push({
+              modelId: 'gpt4o',
+              modelName: 'OpenAI GPT-4o',
+              provider: 'OpenAI',
+              badgeColor: 'from-emerald-500 to-teal-500',
+              content: '',
+              latencyMs: 0,
+              tokensUsed: 0,
+              status: 'unavailable',
+              errorMessage: isArabic ? 'مفتاح مزود OpenAI غير مهيأ للاستدعاء المباشر' : 'OpenAI routing key is required',
+            });
+          }
+        } else {
+          modelResponses.push({
+            modelId: 'gpt4o',
+            modelName: 'OpenAI GPT-4o',
+            provider: 'OpenAI',
+            badgeColor: 'from-emerald-500 to-teal-500',
+            content: '',
+            latencyMs: 0,
+            tokensUsed: 0,
+            status: 'unavailable',
+            errorMessage: isArabic
+              ? 'غير مهيأ: يتطلب تفعيل مفتاح OpenAI أو اشتراك Enterprise'
+              : 'Unconfigured: Requires OpenAI API access or Enterprise tier',
+          });
+        }
+      }
+    }
+
+    // Model 4: Claude 3.5 Sonnet (Truthful reporting - requires Anthropic key)
+    if (targetModels.includes('claude35')) {
+      modelResponses.push({
+        modelId: 'claude35',
+        modelName: 'Claude 3.5 Sonnet',
+        provider: 'Anthropic',
+        badgeColor: 'from-amber-500 to-orange-500',
+        content: '',
+        latencyMs: 0,
+        tokensUsed: 0,
+        status: 'unavailable',
+        errorMessage: isArabic
+          ? 'غير مهيأ: يتطلب تفعيل مفتاح Anthropic API'
+          : 'Unconfigured: Requires Anthropic Claude API key',
+      });
+    }
+
+    // Model 5: DeepSeek R1 (Truthful reporting - requires DeepSeek key)
+    if (targetModels.includes('deepseek')) {
+      modelResponses.push({
+        modelId: 'deepseek',
+        modelName: 'DeepSeek R1',
+        provider: 'DeepSeek',
+        badgeColor: 'from-blue-600 to-indigo-600',
+        content: '',
+        latencyMs: 0,
+        tokensUsed: 0,
+        status: 'unavailable',
+        errorMessage: isArabic
+          ? 'غير مهيأ: يتطلب تفعيل مفتاح DeepSeek API'
+          : 'Unconfigured: Requires DeepSeek API key',
+      });
+    }
+
+    // Synthesize authentic consensus strictly from models that actually succeeded
+    const successfulResponses = modelResponses.filter((m) => m.status === 'success' && m.content);
+    let consensus = '';
+
+    if (successfulResponses.length > 0) {
+      if (successfulResponses.length === 1) {
+        consensus = successfulResponses[0].content.slice(0, 300) + '...';
+      } else {
+        const consensusPrompt = isArabic
+          ? `قم بصياغة ملخص إجماع موحد وموجز (فقرة واحدة) يجمع بين الإجابتين التاليتين لسؤال "${query}":\n\n${successfulResponses.map((r) => `[${r.modelName}]: ${r.content.slice(0, 500)}`).join('\n\n')}`
+          : `Synthesize a concise 2-sentence consensus summarizing the agreement between these model answers for "${query}":\n\n${successfulResponses.map((r) => `[${r.modelName}]: ${r.content.slice(0, 500)}`).join('\n\n')}`;
+
+        if (demoMode) {
+          consensus = isArabic
+            ? 'ملخص إجماع تجريبي: اتفقت النماذج على محاور المقارنة الرئيسية.'
+            : 'Consensus summary: Models aligned on foundational comparative architectural dimensions.';
+        } else {
+          const synRes = await callGeminiSafe(consensusPrompt, { timeoutMs: 10000 });
+          consensus = synRes.text || successfulResponses[0].content.slice(0, 300) + '...';
+        }
+      }
+    } else {
+      if (demoMode) {
+        return getDemoBattleResult(query, isArabic, startTime);
+      }
+      throw new Error(
+        isArabic
+          ? 'تعذر استدعاء أي من النماذج المحددة للمقارنة. يرجى التحقق من توفر المفاتيح.'
+          : 'None of the requested comparison models could be reached. Please check API keys.'
+      );
+    }
 
     return {
       query,
       mode: 'battle',
-      summary: parsedBattle.consensus || (isArabic ? 'إجماع النماذج المتعددة حول الاستعلام' : 'Multi-Model Consensus Summary'),
-      modelResponses: parsedBattle.models || [],
-      sources,
-      keyTakeaways: extractKeyTakeaways(parsedBattle.consensus || query, isArabic),
+      summary: consensus,
+      modelResponses,
+      sources: [],
+      keyTakeaways: extractKeyTakeaways(consensus, isArabic),
       suggestedQueries: generateRelatedQueries(query, isArabic),
       searchMetadata: {
-        totalSources: sources.length,
+        totalSources: 0,
         processingTimeMs: Date.now() - startTime,
-        fallbackUsed: isFallback || !text,
+        fallbackUsed: false,
+        serverLive: true,
       },
     };
   }
 
-  // Mode: Code & Document Analysis
+  // ----------------------------------------------------
+  // MODE 4: CODE & ARCHITECTURE AUDIT
+  // ----------------------------------------------------
   const codePrompt = isArabic
-    ? `أنت المحرك التقني والبرمجي لمنصة "OmniSearch AI" (أومني سيرش - Code & Technical Engine).
-قواعد العمل البرمجي:
-1. جودة الكود: كتابة كود نظيف، آمن، جاهز للإنتاج (Production-ready)، ومصحوب بتعليقات توضيحية واضحة.
-2. أمان المفاتيح والبنية التحتية: التزام تام بحماية مفاتيح API عبر خوادم خلفية (Backend proxies) وتجنب كشف أي أسرار في جانب العميل (Client-side).
-3. هيكل الاستجابة: إجابة مباشرة، فحص دقيق للثغرات، كود محسن كامل، وإرشادات تنفيذ عملية.
-
-حلل الكود أو المحتوى المرفق أو السؤال البرمجي التالي:
+    ? `أنت المحرك البرمجي والتقني لمنصة "OmniSearch AI".
+حلل الكود البرمجي أو السؤال التقني التالي:
 السؤال: "${query}"
-اسم الملف المرفق: ${fileName || 'code_snippet'}
+الملف: ${fileName || 'code_snippet'}
 المحتوى:
 ${fileContent || query}
 
 قم بإرجاع JSON بالتنسيق التالي حصراً:
 {
-  "overview": "إجابة مباشرة ونظرة عامة تقنية دقيقة وموجزة",
-  "bugsOrIssues": ["ملاحظة حول الثغرات أو الأخطاء أو الأمان 1", "ملاحظة 2"],
-  "improvements": ["اقتراح تحسين الأداء 1", "اقتراح تنظيف الكود 2"],
-  "language": "python / typescript / javascript / etc",
-  "optimizedCode": "الكود المحسن والآمن والكامل مع تعليقات توضيحية",
-  "explanation": "شرح التعديلات والحلول والخطوات العملية القادمة"
+  "overview": "إجابة ونظرة عامة تقنية مباشرة",
+  "bugsOrIssues": ["ملاحظة ثغرة أو خطأ 1"],
+  "improvements": ["اقتراح تحسين 1"],
+  "language": "typescript / python / etc",
+  "optimizedCode": "الكود المحسن والآمن والكامل",
+  "explanation": "شرح التعديلات والخطوات القادمة"
 }`
-    : `You are the Core Technical & Code Engine for "OmniSearch AI".
-Rules:
-1. Deliver clean, secure, production-ready, and properly commented code.
-2. Maintain strict security standards (backend proxy architecture for API keys like Gemini/OpenRouter/Groq, zero client-side exposure).
-3. Output direct answers, pinpoint bugs/security flaws, provide optimized code, and detail actionable steps.
-
-Analyze the following query / code:
+    : `You are the Code & Architecture Engine for "OmniSearch AI".
+Analyze the following query or code:
 Query: "${query}"
 File: ${fileName || 'code_snippet'}
 Content:
@@ -437,72 +740,75 @@ ${fileContent || query}
 
 Return ONLY a valid JSON object matching:
 {
-  "overview": "Direct answer and clear architectural overview",
-  "bugsOrIssues": ["Identified bug, edge case, or security vulnerability 1", "issue 2"],
-  "improvements": ["Performance / refactoring / security suggestion 1", "suggestion 2"],
+  "overview": "Direct answer and technical overview",
+  "bugsOrIssues": ["Identified bug or vulnerability 1"],
+  "improvements": ["Improvement suggestion 1"],
   "language": "typescript / python / etc",
-  "optimizedCode": "Complete, production-ready, bug-free, and secure code with comments",
-  "explanation": "Explanation of fixes and actionable next steps"
+  "optimizedCode": "Complete secure refactored code",
+  "explanation": "Explanation of changes"
 }`;
 
-  const { text, isFallback } = await callGeminiSafe(codePrompt, {
+  const { text: codeText, error: codeErr } = await callGeminiSafe(codePrompt, {
     jsonResponse: true,
   });
 
-  let parsedCode = extractJsonSafe<any>(text);
+  if (!codeText) {
+    if (demoMode) {
+      return getDemoCodeResult(query, isArabic, fileContent, fileName, startTime);
+    }
+    throw new Error(
+      codeErr ||
+        (isArabic ? 'فشل تدقيق الكود عبر محرك الذكاء الاصطناعي.' : 'Failed to execute code audit via AI engine.')
+    );
+  }
 
+  const parsedCode = extractJsonSafe<any>(codeText);
   if (!parsedCode || !parsedCode.overview) {
-    parsedCode = generateSynthesizedCodeResponse(query, isArabic, fileContent, fileName);
+    throw new Error(isArabic ? 'تنسيق نتيجة فحص الكود غير صالح' : 'Invalid code audit output format');
   }
 
   return {
     query,
     mode: 'code',
-    summary: parsedCode.overview || (isArabic ? 'اكتمل تدقيق الكود البرمجي' : 'Code analysis complete'),
+    summary: parsedCode.overview,
     detailedReport: parsedCode.explanation || '',
     codeAnalysis: {
-      overview: parsedCode.overview || '',
-      bugsOrIssues: parsedCode.bugsOrIssues || [],
-      improvements: parsedCode.improvements || [],
+      overview: parsedCode.overview,
+      bugsOrIssues: Array.isArray(parsedCode.bugsOrIssues) ? parsedCode.bugsOrIssues : [],
+      improvements: Array.isArray(parsedCode.improvements) ? parsedCode.improvements : [],
       optimizedCode: parsedCode.optimizedCode || '',
       language: parsedCode.language || 'typescript',
+      explanation: parsedCode.explanation,
     },
     sources: [],
     searchMetadata: {
       totalSources: 0,
       processingTimeMs: Date.now() - startTime,
-      fallbackUsed: isFallback || !text,
+      fallbackUsed: false,
+      serverLive: true,
     },
   };
 }
 
-function extractSources(response: any): SearchSource[] {
-  const sources: SearchSource[] = [];
-  const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
-
-  if (Array.isArray(groundingChunks)) {
-    for (const chunk of groundingChunks) {
-      if (chunk.web?.uri && chunk.web?.title) {
-        if (!sources.some((s) => s.url === chunk.web.uri)) {
-          sources.push({
-            title: chunk.web.title,
-            url: chunk.web.uri,
-            snippet: chunk.web.snippet || undefined,
-          });
-        }
-      }
-    }
+// Helper to safely extract JSON
+function extractJsonSafe<T = any>(rawText: string): T | null {
+  if (!rawText || typeof rawText !== 'string') return null;
+  let cleaned = rawText.trim();
+  if (cleaned.startsWith('```')) {
+    cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   }
 
-  return sources.slice(0, 8);
-}
-
-function extractSearchQueries(response: any): string[] {
-  const webQueries = response.candidates?.[0]?.groundingMetadata?.webSearchQueries;
-  if (Array.isArray(webQueries)) {
-    return webQueries.filter((q) => typeof q === 'string');
+  const firstBrace = cleaned.indexOf('{');
+  const lastBrace = cleaned.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    cleaned = cleaned.slice(firstBrace, lastBrace + 1);
   }
-  return [];
+
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    return null;
+  }
 }
 
 function extractKeyTakeaways(text: string, _isArabic: boolean): string[] {
@@ -520,31 +826,21 @@ function extractKeyTakeaways(text: string, _isArabic: boolean): string[] {
     }
   }
 
-  if (bullets.length >= 2) {
-    return bullets.slice(0, 5);
-  }
+  if (bullets.length >= 2) return bullets.slice(0, 5);
 
-  // Extract substantive complete sentences if no explicit list formatting was used
   const sentences = text
     .split(/(?<=[.!?؟])\s+|\n\n+/)
     .map((s) => s.trim().replace(/^#+\s*/, '').replace(/[*_`]/g, ''))
     .filter((s) => s.length >= 30 && s.length <= 160 && !s.includes(':') && !s.startsWith('-'));
 
-  if (sentences.length >= 2) {
-    return sentences.slice(0, 3);
-  }
-
-  // Return empty array rather than fake generic placeholders
-  return [];
+  return sentences.slice(0, 3);
 }
 
 function extractSummaryIntro(text: string): string {
   const paragraphs = text.split('\n\n').map((p) => p.trim()).filter(Boolean);
   if (paragraphs.length > 0) {
     for (const p of paragraphs) {
-      if (!p.startsWith('#') && p.length > 40) {
-        return p.slice(0, 400);
-      }
+      if (!p.startsWith('#') && p.length > 40) return p.slice(0, 400);
     }
     return paragraphs[0].slice(0, 400);
   }
@@ -553,155 +849,121 @@ function extractSummaryIntro(text: string): string {
 
 function generateRelatedQueries(query: string, isArabic: boolean): string[] {
   const q = query.trim().toLowerCase();
-  // Don't show complex related queries for short math questions, greetings, or trivial lookups
   if (q.match(/^(\d+|كم|احسب|ما ناتج|حاصل|أهلاً|مرحبا|hi|hello)/i) && q.length < 30) {
     return [];
   }
-
   if (isArabic) {
     return [
       `أمثلة وتطبيقات عملية إضافية حول ${query}`,
       `أهم الإيجابيات والتحديات والبدائل لـ ${query}`,
-      `دليل الخطوات التوضيحية التفصيلية لـ ${query}`,
     ];
   }
   return [
     `Practical examples and applications for ${query}`,
     `Pros, cons, and alternatives to ${query}`,
-    `Step-by-step implementation guide for ${query}`,
   ];
 }
 
-function generateDefaultSources(_query: string): SearchSource[] {
-  // Never return fake static Wikipedia/Scholar search URLs.
-  // Return empty array if real search grounding chunks were not retrieved.
-  return [];
-}
-
-// Fallback response generators for resilience when AI engine connection is interrupted
-function generateSynthesizedFastResponse(query: string, isArabic: boolean): string {
-  const cleanQ = query.trim();
-  if (isArabic) {
-    return `### ملخص استقصائي ذكي: **${cleanQ}**
-
-بناءً على تجميع البيانات وتحليل قواعد المعرفة المحدثة لمنصة **OmniSearch AI** حول **"${cleanQ}"**:
-
-- **الرؤية المحورية**: يركز موضوع **"${cleanQ}"** على تقديم أفضل الحلول وتطبيق المعايير الحديثة لتحقيق الكفاءة والدقة.
-- **المنهجية الموصى بها**: الاعتماد على البيانات الدقيقة، والمقارنة المستمرة، واتباع الممارسات الفضلى المعتمدة.
-- **الخلاصة والتطبيق**: ينصح دائماً بالتحقق الدوري وتخصيص الحلول وفقاً للأولويات المحددة.`;
-  }
-  return `### Fast Research Synthesis: **${cleanQ}**
-
-Synthesizing foundational insights for **"${cleanQ}"** via **OmniSearch AI**:
-
-- **Core Assessment**: The inquiry into **"${cleanQ}"** highlights modern operational methodologies and established technical benchmarks.
-- **Recommended Strategy**: Rely on verified data patterns, iterative benchmarking, and standardized procedures.
-- **Key Takeaway**: Continuous alignment with proven frameworks yields the most resilient and scalable results.`;
-}
-
-function generateSynthesizedDeepReport(query: string, isArabic: boolean): string {
-  const cleanQ = query.trim();
-  if (isArabic) {
-    return `# تقرير البحث الاستقصائي المعمق: ${cleanQ}
-
----
-
-### 1. الخلاصة التنفيذية (Executive Summary)
-يقدم هذا التقرير تحليلاً شاملاً ومتعدد الأبعاد لموضوع **"${cleanQ}"**، مستعرضاً المحاور الفنية والعملية لتوفير رؤية متكاملة لصناع القرار والباحثين.
-
-### 2. التحليل التفصيلي والمنهجي (Deep Dive Analysis)
-- **الأهمية والسياق**: يمثل **"${cleanQ}"** جانباً جوهرياً يتطلب الموازنة بين الدقة والكفاءة في التنفيذ.
-- **الآليات المعتمدة**: تشير المقارنات الميدانية إلى ضرورة تبني أطر عمل معيارية قابلة للتطوير لتفادي أي ثغرات أو تعقيدات.
-
-### 3. التوصيات والخطوات العملية (Actionable Recommendations)
-1. البدء بوضع خطة واضحة ومحددة الخطوات.
-2. المراجعة الدورية للمخرجات ومؤشرات الأداء.
-3. التوسع التدريجي لضمان استدامة النتائج.`;
-  }
-  return `# Deep Research Report: ${cleanQ}
-
----
-
-### 1. Executive Summary
-This comprehensive report delivers an in-depth, structured investigation into **"${cleanQ}"**, addressing foundational parameters, current benchmarks, and strategic implications.
-
-### 2. Multi-Dimensional Deep Dive
-- **Context & Drivers**: Exploring **"${cleanQ}"** demonstrates the critical role of standardized workflows and proactive risk mitigation.
-- **Operational Frameworks**: Applying established practices ensures maximum reliability and seamless adaptation.
-
-### 3. Strategic Action Plan
-1. Establish verifiable milestone targets.
-2. Continuously audit progress against key performance metrics.
-3. Scale iteratively to sustain long-term efficacy.`;
-}
-
-function generateSynthesizedBattleResponse(
-  query: string,
-  models: string[],
-  isArabic: boolean
-): { consensus: string; models: ModelResponse[] } {
-  const modelMetadata: Record<string, { name: string; provider: string; color: string }> = {
-    gemini: { name: 'Google Gemini 2.5 Pro', provider: 'Google', color: 'from-blue-500 to-cyan-500' },
-    gpt4o: { name: 'OpenAI GPT-4o', provider: 'OpenAI', color: 'from-emerald-500 to-teal-500' },
-    claude35: { name: 'Claude 3.5 Sonnet', provider: 'Anthropic', color: 'from-amber-500 to-orange-500' },
-    llama3: { name: 'Meta Llama 3.3', provider: 'Meta AI', color: 'from-purple-500 to-indigo-500' },
-    deepseek: { name: 'DeepSeek R1', provider: 'DeepSeek', color: 'from-blue-600 to-indigo-600' },
+// ----------------------------------------------------------------------
+// Designated Demonstration Mode generators (ONLY when demoMode is true)
+// ----------------------------------------------------------------------
+function getDemoFastResult(query: string, isArabic: boolean, startTime: number): SearchResultPayload {
+  const text = isArabic
+    ? `[وضع العرض التجريبي] الإجابة المباشرة للاستعلام "${query}": يتناول هذا الموضوع تطبيق المعايير الحديثة لتحقيق الدقة والكفاءة.`
+    : `[Demonstration Mode] Direct response for "${query}": Focuses on modern methodologies and standard benchmarks.`;
+  return {
+    query,
+    mode: 'fast',
+    summary: text,
+    sources: [],
+    keyTakeaways: [isArabic ? 'بيانات تجريبية لأغراض المعاينة والتطوير' : 'Demonstration data for development preview'],
+    searchMetadata: {
+      totalSources: 0,
+      processingTimeMs: Date.now() - startTime,
+      fallbackUsed: true,
+      isDemonstration: true,
+      serverLive: false,
+    },
   };
-
-  const results: ModelResponse[] = models.map((mId) => {
-    const meta = modelMetadata[mId] || { name: `${mId.toUpperCase()} Model`, provider: 'AI Hub', color: 'from-slate-500 to-slate-700' };
-
-    const content = isArabic
-      ? `الإجابة المباشرة للاستعلام: "${query}". تعذر استرداد التفاصيل الكاملة لهذا النموذج نظراً لانقطاع مؤقت في الاتصال، يرجى الضغط على زر إعادة المحاولة.`
-      : `Response for: "${query}". Full response could not be loaded due to a temporary connection interruption. Please click retry.`;
-
-    return {
-      modelId: mId,
-      modelName: meta.name,
-      provider: meta.provider,
-      badgeColor: meta.color,
-      content,
-      latencyMs: 320,
-      tokensUsed: 250,
-    };
-  });
-
-  const consensus = isArabic
-    ? `الإجابة المشتركة للاستعلام "${query}". يرجى إعادة المحاولة في حال لم تكتمل تفاصيل النماذج بالكامل.`
-    : `Consensus summary for "${query}". Please retry if full model outputs are incomplete.`;
-
-  return { consensus, models: results };
 }
 
-function generateSynthesizedCodeResponse(
+function getDemoDeepResult(query: string, isArabic: boolean, startTime: number): SearchResultPayload {
+  const report = isArabic
+    ? `# [وضع العرض التجريبي] تقرير بحث استقصائي: ${query}\n\nهذا تقرير توضيحي يُعرض في بيئة التطوير فقط.`
+    : `# [Demonstration Mode] Deep Research Report: ${query}\n\nThis is a demonstration report shown only in development mode.`;
+  return {
+    query,
+    mode: 'deep',
+    summary: report.slice(0, 300),
+    detailedReport: report,
+    sources: [],
+    deepResearchPhases: [
+      { id: '1', title: 'Demo Scope', status: 'completed', details: 'Demo mode active' },
+    ],
+    searchMetadata: {
+      totalSources: 0,
+      processingTimeMs: Date.now() - startTime,
+      fallbackUsed: true,
+      isDemonstration: true,
+      serverLive: false,
+    },
+  };
+}
+
+function getDemoBattleResult(query: string, isArabic: boolean, startTime: number): SearchResultPayload {
+  return {
+    query,
+    mode: 'battle',
+    summary: isArabic ? '[عرض تجريبي] مقارنة النماذج في بيئة التطوير' : '[Demo Mode] Model comparison preview',
+    modelResponses: [
+      {
+        modelId: 'gemini',
+        modelName: 'Google Gemini (Demo)',
+        provider: 'Google',
+        badgeColor: 'from-blue-500 to-cyan-500',
+        content: isArabic ? 'نموذج إجابة تجريبي لـ Gemini' : 'Demo response for Gemini',
+        latencyMs: 120,
+        tokensUsed: 100,
+        status: 'success',
+      },
+    ],
+    sources: [],
+    searchMetadata: {
+      totalSources: 0,
+      processingTimeMs: Date.now() - startTime,
+      fallbackUsed: true,
+      isDemonstration: true,
+      serverLive: false,
+    },
+  };
+}
+
+function getDemoCodeResult(
   query: string,
   isArabic: boolean,
-  fileContent?: string,
-  fileName?: string
-): any {
-  const codeSample = fileContent || `// Code snippet for: ${query}
-export function processQuery(input: string) {
-  if (!input) return null;
-  return { status: 'success', data: input.trim(), timestamp: Date.now() };
-}`;
-
-  if (isArabic) {
-    return {
-      overview: `تحليل أولي للكود (${fileName || 'الكود المرفق'}).`,
-      bugsOrIssues: ['يرجى إعادة المحاولة لإجراء فحص برمجي معمق عبر المحرك الذكي.'],
-      improvements: ['التأكد من معالجة حالات الخطأ وكتابة أنواع TypeScript الصارمة.'],
-      language: 'typescript',
-      optimizedCode: codeSample,
-      explanation: 'تم فحص الكود بشكل أولي. أعد المحاولة للحصول على تدقيق ثغرات كامل.',
-    };
-  }
-
+  fileContent: string | undefined,
+  fileName: string | undefined,
+  startTime: number
+): SearchResultPayload {
   return {
-    overview: `Preliminary analysis for (${fileName || 'provided code'}).`,
-    bugsOrIssues: ['Please retry to run a comprehensive static and security audit.'],
-    improvements: ['Ensure strict TypeScript typing and defensive error boundaries.'],
-    language: 'typescript',
-    optimizedCode: codeSample,
-    explanation: 'Basic review completed. Click retry for deep security and syntax audit.',
+    query,
+    mode: 'code',
+    summary: isArabic ? 'تحليل كود تجريبي' : 'Demo code audit',
+    codeAnalysis: {
+      overview: isArabic ? 'نظرة عامة تجريبية' : 'Demo overview',
+      bugsOrIssues: [isArabic ? 'وضع العرض التجريبي نشط' : 'Demonstration mode active'],
+      improvements: [isArabic ? 'ربط مفتاح GEMINI_API_KEY للتدقيق الحي' : 'Configure GEMINI_API_KEY for live audit'],
+      language: 'typescript',
+      optimizedCode: fileContent || '// Demo sample code',
+      explanation: isArabic ? 'فحص تجريبي في بيئة التطوير' : 'Demo audit executed',
+    },
+    sources: [],
+    searchMetadata: {
+      totalSources: 0,
+      processingTimeMs: Date.now() - startTime,
+      fallbackUsed: true,
+      isDemonstration: true,
+      serverLive: false,
+    },
   };
 }

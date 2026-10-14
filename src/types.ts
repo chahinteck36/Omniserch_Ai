@@ -39,6 +39,8 @@ export interface ModelResponse {
   content: string;
   latencyMs: number;
   tokensUsed: number;
+  status?: 'success' | 'unavailable' | 'error';
+  errorMessage?: string;
 }
 
 export interface DeepResearchPhase {

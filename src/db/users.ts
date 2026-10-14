@@ -1,0 +1,52 @@
+import { eq } from 'drizzle-orm';
+import { db } from './index.ts';
+import { users } from './schema.ts';
+
+export async function getOrCreateUser(uid: string, email: string, tier: string = 'free') {
+  try {
+    const result = await db
+      .insert(users)
+      .values({
+        uid,
+        email,
+        tier,
+      })
+      .onConflictDoUpdate({
+        target: users.uid,
+        set: {
+          email,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+
+    return result[0];
+  } catch (error) {
+    console.error('Database query failed in getOrCreateUser:', error);
+    throw new Error('Database operation failed. Please try again later.', { cause: error });
+  }
+}
+
+export async function getUserByUid(uid: string) {
+  try {
+    const rows = await db.select().from(users).where(eq(users.uid, uid)).limit(1);
+    return rows[0] || null;
+  } catch (error) {
+    console.error('Database query failed in getUserByUid:', error);
+    throw new Error('Database query failed. Please try again later.', { cause: error });
+  }
+}
+
+export async function updateUserTier(uid: string, tier: string) {
+  try {
+    const result = await db
+      .update(users)
+      .set({ tier, updatedAt: new Date() })
+      .where(eq(users.uid, uid))
+      .returning();
+    return result[0] || null;
+  } catch (error) {
+    console.error('Database query failed in updateUserTier:', error);
+    throw new Error('Database update failed. Please try again later.', { cause: error });
+  }
+}

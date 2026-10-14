@@ -1,0 +1,205 @@
+[
+  {
+    "code": "OMNI-PRO-A1DA-A63E",
+    "tier": "pro",
+    "duration": "1_month",
+    "createdAt": 1791997762631,
+    "isUsed": true,
+    "note": "Unit Test",
+    "usedByEmail": "user_1791997762631@test.com",
+    "usedAt": 1791997762631,
+    "expiresAt": 1794589762631
+  },
+  {
+    "code": "OMNI-PRO-85B8-A236",
+    "tier": "pro",
+    "duration": "1_month",
+    "createdAt": 1791997682420,
+    "isUsed": true,
+    "note": "Unit Test",
+    "usedByEmail": "user_1791997682420@test.com",
+    "usedAt": 1791997682420,
+    "expiresAt": 1794589682420
+  },
+  {
+    "code": "OMNI-PRO-0727-083A",
+    "tier": "pro",
+    "duration": "1_month",
+    "createdAt": 1791997640817,
+    "isUsed": true,
+    "note": "Unit Test",
+    "usedByEmail": "user_1791997640818@test.com",
+    "usedAt": 1791997640818,
+    "expiresAt": 1794589640818
+  },
+  {
+    "code": "OMNI-PRO-BECA-7095",
+    "tier": "pro",
+    "duration": "1_month",
+    "createdAt": 1791997629064,
+    "isUsed": true,
+    "note": "Unit Test",
+    "usedByEmail": "user_1791997629064@test.com",
+    "usedAt": 1791997629064,
+    "expiresAt": 1794589629064
+  },
+  {
+    "code": "OMNI-PRO-C689-F55A",
+    "tier": "pro",
+    "duration": "1_month",
+    "createdAt": 1791997595109,
+    "isUsed": true,
+    "note": "Unit Test",
+    "usedByEmail": "user_1791997595109@test.com",
+    "usedAt": 1791997595109,
+    "expiresAt": 1794589595109
+  },
+  {
+    "code": "OMNI-PRO-845E-1F04",
+    "tier": "pro",
+    "duration": "1_month",
+    "createdAt": 1791997379006,
+    "isUsed": true,
+    "note": "Unit Test",
+    "usedByEmail": "user_1791997379007@test.com",
+    "usedAt": 1791997379007,
+    "expiresAt": 1794589379007
+  },
+  {
+    "code": "OMNI-PRO-DB1F-2CCD",
+    "tier": "pro",
+    "duration": "1_month",
+    "createdAt": 1791764809648,
+    "isUsed": true,
+    "note": "Unit Test",
+    "usedByEmail": "user_1791764809649@test.com",
+    "usedAt": 1791764809649,
+    "expiresAt": 1794356809649
+  },
+  {
+    "code": "OMNI-PRO-A12D-73AD",
+    "tier": "pro",
+    "duration": "1_month",
+    "createdAt": 1791764691928,
+    "isUsed": true,
+    "note": "Unit Test",
+    "usedByEmail": "user_1791764691928@test.com",
+    "usedAt": 1791764691928,
+    "expiresAt": 1794356691928
+  },
+  {
+    "code": "OMNI-PRO-357D-46D3",
+    "tier": "pro",
+    "duration": "1_month",
+    "createdAt": 1791764488235,
+    "isUsed": true,
+    "note": "Unit Test",
+    "usedByEmail": "user_1791764488235@test.com",
+    "usedAt": 1791764488235,
+    "expiresAt": 1794356488235
+  },
+  {
+    "code": "OMNI-PRO-9612-720F",
+    "tier": "pro",
+    "duration": "1_month",
+    "createdAt": 1791764426517,
+    "isUsed": true,
+    "note": "Unit Test",
+    "usedByEmail": "user_1791764426517@test.com",
+    "usedAt": 1791764426517,
+    "expiresAt": 1794356426517
+  },
+  {
+    "code": "OMNI-PRO-AE91-5093",
+    "tier": "pro",
+    "duration": "1_month",
+    "createdAt": 1791764234463,
+    "isUsed": true,
+    "note": "Unit Test",
+    "usedByEmail": "user_1791764234463@test.com",
+    "usedAt": 1791764234464,
+    "expiresAt": 1794356234464
+  },
+  {
+    "code": "OMNI-PRO-FA79-7E08",
+    "tier": "pro",
+    "duration": "1_month",
+    "createdAt": 1791762822684,
+    "isUsed": true,
+    "note": "Unit Test",
+    "usedByEmail": "user_1791762822685@test.com",
+    "usedAt": 1791762822685,
+    "expiresAt": 1794354822685
+  },
+  {
+    "code": "OMNI-PRO-4796-8B97",
+    "tier": "pro",
+    "duration": "1_month",
+    "createdAt": 1791761371158,
+    "isUsed": true,
+    "note": "Unit Test",
+    "usedByEmail": "user_1791761371158@test.com",
+    "usedAt": 1791761371158,
+    "expiresAt": 1794353371158
+  },
+  {
+    "code": "OMNI-PRO-E233-3603",
+    "tier": "pro",
+    "duration": "1_month",
+    "createdAt": 1791760870375,
+    "isUsed": true,
+    "note": "Unit Test",
+    "usedByEmail": "user_1791760870376@test.com",
+    "usedAt": 1791760870376,
+    "expiresAt": 1794352870376
+  },
+  {
+    "code": "OMNI-PRO-A247-5D0A",
+    "tier": "pro",
+    "duration": "1_month",
+    "createdAt": 1791760824721,
+    "isUsed": true,
+    "note": "Unit Test",
+    "usedByEmail": "user_1791760824721@test.com",
+    "usedAt": 1791760824721,
+    "expiresAt": 1794352824721
+  },
+  {
+    "code": "OMNI-PRO-79B8-AB55",
+    "tier": "pro",
+    "duration": "1_month",
+    "createdAt": 1791760810903,
+    "isUsed": true,
+    "note": "Unit Test",
+    "usedByEmail": "user_1791760810904@test.com",
+    "usedAt": 1791760810904,
+    "expiresAt": 1794352810904
+  },
+  {
+    "code": "OMNI-PRO-2F01-D76F",
+    "tier": "pro",
+    "duration": "1_month",
+    "createdAt": 1791760804205,
+    "isUsed": true,
+    "note": "Unit Test",
+    "usedByEmail": "user_1791760804205@test.com",
+    "usedAt": 1791760804205,
+    "expiresAt": 1794352804205
+  },
+  {
+    "code": "OMNI-PRO-2026-VIP1",
+    "tier": "pro",
+    "duration": "1_month",
+    "createdAt": 1791757193788,
+    "isUsed": false,
+    "note": "Seed Pro 1-Month Code"
+  },
+  {
+    "code": "OMNI-ENT-7104-VIP2",
+    "tier": "enterprise",
+    "duration": "1_year",
+    "createdAt": 1791758993788,
+    "isUsed": false,
+    "note": "Seed Enterprise 1-Year Code"
+  }
+]
