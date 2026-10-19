@@ -5,12 +5,12 @@ import { apiRouter } from './src/server/api';
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   app.use(express.json({ limit: '20mb' }));
   app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
-  // CORS and Preflight Handling for Cloudflare Pages <-> Cloud Run compatibility
+  // CORS and Preflight Handling for Cloudflare Pages <-> Render / Cloud Run compatibility
   app.use((req, res, next) => {
     const origin = req.headers.origin || '*';
     res.header('Access-Control-Allow-Origin', origin);
@@ -26,6 +26,16 @@ async function startServer() {
 
   // API Routes
   app.use('/api', apiRouter);
+
+  // Safe error handling middleware (Never exposes keys or sensitive stacktraces)
+  app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error('[Server Error]', err?.message || err);
+    if (res.headersSent) return;
+    res.status(err.status || 500).json({
+      error: 'SERVER_ERROR',
+      message: err?.message || 'An unexpected server error occurred',
+    });
+  });
 
   // Vite development middleware vs production static files
   if (process.env.NODE_ENV !== 'production') {
@@ -43,7 +53,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server listening on port ${PORT}`);
+    console.log(`Server listening on 0.0.0.0:${PORT} (NODE_ENV=${process.env.NODE_ENV || 'development'})`);
   });
 }
 

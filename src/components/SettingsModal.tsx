@@ -39,6 +39,7 @@ import {
   getCustomEndpoint,
   saveCustomEndpoint
 } from '../services/modelConfigService';
+import { testBackendConnection, getApiBaseUrl } from '../services/apiClient';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -85,6 +86,30 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     geminiKeyConfigured: boolean;
     checking: boolean;
   }>({ ok: true, geminiKeyConfigured: true, checking: false });
+
+  // Dedicated Backend Connection Diagnostics
+  const [isTestingBackend, setIsTestingBackend] = useState(false);
+  const [backendTestResult, setBackendTestResult] = useState<{
+    tested: boolean;
+    ok: boolean;
+    status: number;
+    url: string;
+    error?: string;
+  } | null>(null);
+
+  const handleTestBackend = async () => {
+    setIsTestingBackend(true);
+    setBackendTestResult(null);
+    const res = await testBackendConnection();
+    setIsTestingBackend(false);
+    setBackendTestResult({
+      tested: true,
+      ok: res.ok,
+      status: res.status,
+      url: res.url,
+      error: res.error,
+    });
+  };
 
   // Models State
   const [modelsList, setModelsList] = useState<ModelConfig[]>([]);
@@ -759,6 +784,96 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     ? '💡 يتضمن المشروع ملف Dockerfile و .env.example جاهزين للاستخدام المباشر مع Google Cloud Build و Cloud Run.'
                     : '💡 The repo includes ready-to-deploy Dockerfile and .env.example files for seamless Cloud Run deployments.'}
                 </p>
+              </div>
+
+              {/* Solution 3: Cloudflare Pages + Render Web Service Architecture */}
+              <div className="rounded-2xl border border-purple-500/30 bg-purple-950/15 p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-purple-500/20 text-purple-400 text-xs font-bold border border-purple-500/30">
+                      3
+                    </span>
+                    <h4 className="text-sm font-bold text-white">
+                      {isAr ? 'الحل الهجين: Cloudflare Pages (واجهة) + Render (خادم Express مجاني)' : 'Solution 3: Cloudflare Pages + Render Web Service'}
+                    </h4>
+                  </div>
+                  <span className="rounded-full bg-purple-500/20 px-2.5 py-0.5 text-[10px] font-bold text-purple-300 border border-purple-500/30">
+                    {isAr ? 'الخيار المجاني المستقل' : 'Free Full-Stack'}
+                  </span>
+                </div>
+
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  {isAr
+                    ? 'يمكنك استضافة الواجهة على Cloudflare Pages وتشغيل خادم Express على خدمة Render Web Service المجانية. لربطهما معاً، أضف المتغير البيئي التالي في إعدادات Cloudflare Pages Build Environment:'
+                    : 'Host the frontend on Cloudflare Pages and deploy the Express backend on Render Web Service. Link them seamlessly by setting this environment variable in Cloudflare Pages:'}
+                </p>
+
+                <div className="rounded-xl bg-slate-950 p-3.5 border border-slate-800 font-mono text-[11px] text-slate-300 space-y-1.5">
+                  <div className="text-slate-500"># Cloudflare Pages &gt; Settings &gt; Environment variables</div>
+                  <div className="text-indigo-300 font-bold">VITE_API_BASE_URL=https://your-service-name.onrender.com</div>
+                  <div className="text-slate-500 mt-2"># Render Web Service Settings</div>
+                  <div className="text-emerald-400 font-bold">Build Command: npm install && npm run build</div>
+                  <div className="text-emerald-400 font-bold">Start Command: npm start</div>
+                </div>
+
+                {/* Connection Diagnostics Card */}
+                <div className="rounded-xl border border-slate-700/80 bg-slate-900/80 p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Server className="h-4 w-4 text-indigo-400" />
+                      <span className="text-xs font-bold text-white">
+                        {isAr ? 'فحص الاتصال بالخادم الخلفي' : 'Live Backend Diagnostic'}
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleTestBackend}
+                      disabled={isTestingBackend}
+                      className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-indigo-500 disabled:opacity-50 transition-colors shadow-md"
+                    >
+                      <RefreshCw className={`h-3 w-3 ${isTestingBackend ? 'animate-spin' : ''}`} />
+                      <span>{isTestingBackend ? (isAr ? 'جارِ الفحص...' : 'Pinging...') : (isAr ? 'اختبار الاتصال الآن' : 'Test Connection')}</span>
+                    </button>
+                  </div>
+
+                  <div className="text-[11px] text-slate-400 space-y-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-slate-500">{isAr ? 'عنوان الخادم المستهدف:' : 'Target URL:'}</span>
+                      <span className="font-mono text-slate-300">
+                        {getApiBaseUrl() || (isAr ? '(نفس النطاق المحلي / Same Origin)' : '(Same Origin / relative /api)')}
+                      </span>
+                    </div>
+
+                    {backendTestResult && (
+                      <div className={`mt-2 flex items-center gap-2 rounded-lg p-2.5 text-xs font-medium border ${
+                        backendTestResult.ok
+                          ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                          : 'border-red-500/30 bg-red-500/10 text-red-300'
+                      }`}>
+                        {backendTestResult.ok ? (
+                          <>
+                            <Check className="h-4 w-4 shrink-0 text-emerald-400" />
+                            <span>
+                              {isAr
+                                ? `✅ تم الاتصال بنجاح بالخادم الخلفي (رمز الاستجابة: ${backendTestResult.status} OK)`
+                                : `✅ Connected successfully to backend engine (HTTP ${backendTestResult.status} OK)`}
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <AlertCircle className="h-4 w-4 shrink-0 text-red-400" />
+                            <span>
+                              {isAr
+                                ? `❌ تعذر الاتصال بالخادم: ${backendTestResult.error}`
+                                : `❌ Connection failed: ${backendTestResult.error}`}
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
           )}

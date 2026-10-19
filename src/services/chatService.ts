@@ -4,6 +4,7 @@
  */
 
 import { getOpenRouterApiKey } from './modelConfigService';
+import { apiUrl } from './apiClient';
 
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
@@ -56,7 +57,7 @@ export async function sendMessageToAI(
     headers['x-openrouter-key'] = openRouterKey;
   }
 
-  const response = await fetch('/api/chat', {
+  const response = await fetch(apiUrl('/api/chat'), {
     method: 'POST',
     headers,
     body: JSON.stringify({

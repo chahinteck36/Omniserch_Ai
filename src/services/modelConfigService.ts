@@ -1,5 +1,6 @@
 import { AVAILABLE_MODELS } from '../data/models';
 import { ModelConfig } from '../types';
+import { apiUrl } from './apiClient';
 
 const MODELS_CONFIG_STORAGE_KEY = 'omnisearch_models_config';
 const GEMINI_KEY_STORAGE = 'omnisearch_gemini_key';
@@ -191,7 +192,7 @@ export async function validateOpenRouterKey(key: string): Promise<{
   }
 
   try {
-    const res = await fetch('/api/validate-openrouter', {
+    const res = await fetch(apiUrl('/api/validate-openrouter'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ apiKey: key.trim() }),
@@ -216,7 +217,7 @@ export async function checkBackendEngineHealth(): Promise<{
   timestamp?: string;
 }> {
   try {
-    const res = await fetch('/api/health');
+    const res = await fetch(apiUrl('/api/health'));
     if (!res.ok) throw new Error('Health endpoint returned error');
     const data = await res.json();
     return {

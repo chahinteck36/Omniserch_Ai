@@ -1,5 +1,6 @@
 import { ActivationCode, UserPlan } from '../types';
 import { calculateExpirationDate, sendSubscriptionEmailNotification } from './emailService';
+import { apiUrl } from './apiClient';
 
 export const FREE_SEARCH_LIMIT = 10;
 const USER_TOKEN_KEY = 'omnisearch_user_token';
@@ -55,7 +56,7 @@ export async function verifySellerPinAsync(pin: string): Promise<{ success: bool
   if (!clean) return { success: false, error: 'PIN cannot be empty' };
 
   try {
-    const res = await fetch('/api/admin/verify-pin', {
+    const res = await fetch(apiUrl('/api/admin/verify-pin'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ pin: clean }),
@@ -87,7 +88,7 @@ export async function fetchServerCodes(): Promise<ActivationCode[]> {
   if (!token) return getStoredCodes();
 
   try {
-    const res = await fetch('/api/admin/codes', {
+    const res = await fetch(apiUrl('/api/admin/codes'), {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (res.ok) {
@@ -135,7 +136,7 @@ export async function generateLicenseCodeAsync(
   const token = getAdminToken();
 
   try {
-    const res = await fetch('/api/admin/generate-code', {
+    const res = await fetch(apiUrl('/api/admin/generate-code'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -200,7 +201,7 @@ export async function redeemLicenseCodeAsync(
   const cleanEmail = userEmail.trim().toLowerCase();
 
   try {
-    const res = await fetch('/api/license/redeem', {
+    const res = await fetch(apiUrl('/api/license/redeem'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code: cleanCode, email: cleanEmail }),
@@ -292,7 +293,7 @@ export function redeemLicenseCode(
 export async function deleteCodeAsync(codeString: string): Promise<boolean> {
   const token = getAdminToken();
   try {
-    const res = await fetch(`/api/admin/code/${encodeURIComponent(codeString)}`, {
+    const res = await fetch(apiUrl(`/api/admin/code/${encodeURIComponent(codeString)}`), {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${token || ''}` },
     });
@@ -315,7 +316,7 @@ export function deleteCode(codeString: string) {
  */
 export async function checkServerQuota(email?: string): Promise<{ used: number; total: number; isExhausted: boolean }> {
   try {
-    const res = await fetch('/api/quota/check', {
+    const res = await fetch(apiUrl('/api/quota/check'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email }),

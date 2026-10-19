@@ -1,6 +1,7 @@
 import { SearchResult, ResearchMode, Language, ModelResponse, DeepResearchPhase } from '../types';
 import { getOpenRouterApiKey, getCustomEndpoint, getGeminiApiKey } from './modelConfigService';
 import { getUserToken } from './licenseService';
+import { apiUrl } from './apiClient';
 
 export interface SearchExecutionParams {
   query: string;
@@ -79,7 +80,7 @@ export async function executeUnifiedSearch(
       // If progress callback is provided, attempt progressive SSE streaming delivery
       if (params.onProgress) {
         try {
-          const streamRes = await fetch('/api/search/stream', {
+          const streamRes = await fetch(apiUrl('/api/search/stream'), {
             method: 'POST',
             headers,
             body: JSON.stringify({
@@ -158,7 +159,7 @@ export async function executeUnifiedSearch(
         }
       }
 
-      const response = await fetch('/api/search', {
+      const response = await fetch(apiUrl('/api/search'), {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -512,7 +513,7 @@ async function callCloudflareChatEndpoint(
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 25000);
 
-  const res = await fetch('/api/chat', {
+  const res = await fetch(apiUrl('/api/chat'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
