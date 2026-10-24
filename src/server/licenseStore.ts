@@ -319,11 +319,29 @@ export function redeemServerLicense(
   };
 }
 
+export function isOwnerEmail(email?: string): boolean {
+  if (!email || typeof email !== 'string') return false;
+  const norm = email.trim().toLowerCase();
+  return (
+    norm === 'gmouhamed36@gmail.com' ||
+    norm.includes('chahin36') ||
+    Boolean(process.env.OWNER_EMAIL && norm === process.env.OWNER_EMAIL.trim().toLowerCase())
+  );
+}
+
 // Server Quota Verification & Consumption
 export function getAuthoritativeQuota(
   email?: string,
   ip?: string
 ): { used: number; total: number; isExhausted: boolean } {
+  if (email && isOwnerEmail(email)) {
+    return {
+      used: 0,
+      total: 999999,
+      isExhausted: false,
+    };
+  }
+
   let used = 0;
   if (email && email.trim()) {
     const norm = email.trim().toLowerCase();
@@ -343,6 +361,14 @@ export function consumeAuthoritativeQuota(
   email?: string,
   ip?: string
 ): { success: boolean; used: number; remaining: number } {
+  if (email && isOwnerEmail(email)) {
+    return {
+      success: true,
+      used: 0,
+      remaining: 999999,
+    };
+  }
+
   let used = 0;
   if (email && email.trim()) {
     const norm = email.trim().toLowerCase();
@@ -478,6 +504,13 @@ export async function getAuthoritativeQuotaAsync(
   email?: string,
   ip?: string
 ): Promise<{ used: number; total: number; isExhausted: boolean }> {
+  if (email && isOwnerEmail(email)) {
+    return {
+      used: 0,
+      total: 999999,
+      isExhausted: false,
+    };
+  }
   if (isSqlConfigured()) {
     try {
       const identifier = email && email.trim() ? email.trim().toLowerCase() : ip || 'client';
@@ -494,6 +527,13 @@ export async function consumeAuthoritativeQuotaAsync(
   email?: string,
   ip?: string
 ): Promise<{ success: boolean; used: number; remaining: number }> {
+  if (email && isOwnerEmail(email)) {
+    return {
+      success: true,
+      used: 0,
+      remaining: 999999,
+    };
+  }
   if (isSqlConfigured()) {
     try {
       const identifier = email && email.trim() ? email.trim().toLowerCase() : ip || 'client';

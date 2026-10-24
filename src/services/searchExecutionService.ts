@@ -2,6 +2,7 @@ import { SearchResult, ResearchMode, Language, ModelResponse, DeepResearchPhase 
 import { getOpenRouterApiKey, getCustomEndpoint, getGeminiApiKey } from './modelConfigService';
 import { getUserToken } from './licenseService';
 import { apiUrl } from './apiClient';
+import { alignReportWithSources } from '../utils/sourceAlignment';
 
 export interface SearchExecutionParams {
   query: string;
@@ -318,6 +319,7 @@ async function callGeminiDirectly(
       temperature: 0.7,
       maxOutputTokens: params.mode === 'deep' ? 4096 : 2048,
     },
+    tools: [{ googleSearch: {} }],
   };
 
   if (systemPrompt) {
@@ -339,16 +341,33 @@ async function callGeminiDirectly(
   const latencyMs = Date.now() - startTime;
   const sources: Array<{ title: string; url: string; snippet?: string }> = [];
 
-  // Extract grounding if available
-  const chunks = data?.candidates?.[0]?.groundingMetadata?.groundingChunks;
+  // Extract grounding if available (camelCase or snake_case)
+  const chunks =
+    data?.candidates?.[0]?.groundingMetadata?.groundingChunks ||
+    data?.candidates?.[0]?.grounding_metadata?.grounding_chunks ||
+    data?.groundingMetadata?.groundingChunks ||
+    data?.grounding_metadata?.grounding_chunks;
+
   if (Array.isArray(chunks)) {
     for (const chunk of chunks) {
-      if (chunk.web?.uri) {
-        sources.push({
-          title: chunk.web.title || 'Web Source',
-          url: chunk.web.uri,
-          snippet: chunk.web.snippet,
-        });
+      const uri = chunk.web?.uri || chunk.web?.url || chunk.webUri || chunk.uri || chunk.url;
+      if (uri && typeof uri === 'string' && (uri.startsWith('http://') || uri.startsWith('https://'))) {
+        const cleanUri = uri.trim();
+        let title = (chunk.web?.title || chunk.title || '').trim();
+        if (!title) {
+          try {
+            title = new URL(cleanUri).hostname.replace(/^www\./, '');
+          } catch {
+            title = 'Web Source';
+          }
+        }
+        if (!sources.some((s) => s.url === cleanUri)) {
+          sources.push({
+            title,
+            url: cleanUri,
+            snippet: chunk.web?.snippet || chunk.snippet,
+          });
+        }
       }
     }
   }
@@ -393,14 +412,31 @@ async function callGeminiDirectly(
   }
 
   if (params.mode === 'deep') {
+    const hasSources = sources.length > 0;
+    const alignedText = alignReportWithSources(text, sources, isAr);
     return {
-      detailedReport: text,
-      summary: text.slice(0, 400) + '...',
+      detailedReport: alignedText,
+      summary: alignedText.slice(0, 400) + '...',
       sources,
       keyTakeaways: takeaways,
       deepResearchPhases: [
         { id: '1', title: isAr ? 'استكشاف الأبعاد' : 'Scoping', status: 'completed' },
-        { id: '2', title: isAr ? 'التحليل المعمق' : 'Deep Synthesis', status: 'completed' },
+        {
+          id: '2',
+          title: isAr ? 'استرجاع المصادر المباشرة' : 'Live Source Retrieval',
+          status: hasSources ? 'completed' : 'unverified',
+          details: hasSources
+            ? (isAr ? `تم استرجاع ${sources.length} مصادر موثقة` : `Retrieved ${sources.length} verified sources`)
+            : (isAr ? 'لم تتوفر مصادر خارجية موثقة لهذا الاستعلام' : 'No verified external sources available'),
+        },
+        {
+          id: '3',
+          title: isAr ? 'التحليل والتركيب' : 'Synthesis & Analysis',
+          status: 'completed',
+          details: hasSources
+            ? (isAr ? 'تمت المطابقة والتحقق استناداً إلى المصادر' : 'Cross-validated findings against sources')
+            : (isAr ? 'تحليل مبني على المعرفة النموذجية (غير مطابق مع مصادر مستقلة)' : 'Synthesized from model knowledge (not cross-referenced)'),
+        },
       ],
       suggestedQueries: generateRelatedQueries(cleanQuery, isAr),
     };
@@ -484,9 +520,10 @@ async function callOpenRouterDirectly(
     };
   }
 
+  const finalDetailedReport = params.mode === 'deep' ? alignReportWithSources(text, [], isAr) : undefined;
   return {
-    summary: text,
-    detailedReport: params.mode === 'deep' ? text : undefined,
+    summary: finalDetailedReport || text,
+    detailedReport: finalDetailedReport,
     sources: [],
     keyTakeaways: takeaways,
     suggestedQueries: generateRelatedQueries(params.query, isAr),
@@ -537,9 +574,10 @@ async function callCloudflareChatEndpoint(
   const tokens = data.usage?.total_tokens || Math.ceil(answer.length / 4);
   const keyTakeaways = extractKeyTakeaways(answer, isAr);
 
+  const finalAnswer = params.mode === 'deep' ? alignReportWithSources(answer, [], isAr) : answer;
   return {
-    summary: answer.slice(0, 320) + (answer.length > 320 ? '...' : ''),
-    detailedReport: params.mode === 'deep' ? answer : undefined,
+    summary: finalAnswer.slice(0, 320) + (finalAnswer.length > 320 ? '...' : ''),
+    detailedReport: params.mode === 'deep' ? finalAnswer : undefined,
     sources: [],
     keyTakeaways,
     modelResponses: [
@@ -548,7 +586,7 @@ async function callCloudflareChatEndpoint(
         modelName: 'Meta Llama 3.1 8B',
         provider: 'Meta / OpenRouter',
         badgeColor: 'from-blue-500 to-cyan-500',
-        content: answer,
+        content: finalAnswer,
         latencyMs,
         tokensUsed: tokens,
         status: 'success',

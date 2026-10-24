@@ -46,7 +46,7 @@ export interface ModelResponse {
 export interface DeepResearchPhase {
   id: string;
   title: string;
-  status: 'pending' | 'in_progress' | 'completed';
+  status: 'pending' | 'in_progress' | 'completed' | 'unverified';
   details?: string;
 }
 

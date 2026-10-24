@@ -346,8 +346,15 @@ export function getEmailQuotasMap(): Record<string, number> {
   }
 }
 
+export function isOwnerEmail(email?: string): boolean {
+  if (!email || typeof email !== 'string') return false;
+  const norm = email.trim().toLowerCase();
+  return norm === 'gmouhamed36@gmail.com' || norm.includes('chahin36');
+}
+
 export function getEmailUsedSearches(email: string): number {
   if (!email) return 0;
+  if (isOwnerEmail(email)) return 0;
   const normalized = email.trim().toLowerCase();
   const map = getEmailQuotasMap();
   return typeof map[normalized] === 'number' ? map[normalized] : 0;
@@ -355,6 +362,7 @@ export function getEmailUsedSearches(email: string): number {
 
 export function recordEmailSearchUsage(email: string): number {
   if (!email) return 0;
+  if (isOwnerEmail(email)) return 0;
   const normalized = email.trim().toLowerCase();
   const map = getEmailQuotasMap();
   const current = map[normalized] || 0;
@@ -370,6 +378,7 @@ export function recordEmailSearchUsage(email: string): number {
 
 export function isEmailQuotaExhausted(email: string): boolean {
   if (!email) return false;
+  if (isOwnerEmail(email)) return false;
   const used = getEmailUsedSearches(email);
   return used >= FREE_SEARCH_LIMIT;
 }

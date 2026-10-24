@@ -1,5 +1,9 @@
 import { GoogleGenAI } from '@google/genai';
 import { SearchSource, ModelResponse, DeepResearchPhase } from '../types';
+import { alignReportWithSources } from '../utils/sourceAlignment';
+import { isTavilyConfigured, searchTavily, buildTavilySearchContext } from './tavilyService';
+
+export { alignReportWithSources, verifyClaimSourceAlignment };
 
 let aiClient: GoogleGenAI | null = null;
 
@@ -55,6 +59,95 @@ const PRIMARY_MODEL = 'gemini-3.8-flash';
 const FALLBACK_MODEL = 'gemini-3.1-flash-lite';
 
 /**
+ * Safely calls OpenRouter chat completions API as a fallback when Gemini is unavailable due to quota or permission errors.
+ */
+export async function callOpenRouterSafe(
+  prompt: string,
+  options: {
+    systemPrompt?: string;
+    timeoutMs?: number;
+  } = {}
+): Promise<{ text: string; durationMs: number; error?: string }> {
+  const openRouterKey = process.env.OPENROUTER_API_KEY;
+  if (!openRouterKey || !openRouterKey.trim()) {
+    return {
+      text: '',
+      durationMs: 0,
+      error: 'OPENROUTER_API_KEY is not configured on the server',
+    };
+  }
+
+  const startTime = Date.now();
+  const timeoutMs = options.timeoutMs || 25000;
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const messages: any[] = [];
+    if (options.systemPrompt) {
+      messages.push({ role: 'system', content: options.systemPrompt });
+    }
+    messages.push({ role: 'user', content: prompt });
+
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${openRouterKey.trim()}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://omnisearch.app',
+        'X-Title': 'OmniSearch AI Fallback',
+      },
+      body: JSON.stringify({
+        model: 'meta-llama/llama-3.1-8b-instruct:free',
+        messages,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutHandle);
+    const durationMs = Date.now() - startTime;
+
+    if (!response.ok) {
+      let errDetail = '';
+      try {
+        const errJson = await response.json();
+        errDetail = errJson?.error?.message || errJson?.error || JSON.stringify(errJson);
+      } catch {
+        errDetail = await response.text();
+      }
+      return {
+        text: '',
+        durationMs,
+        error: `OpenRouter API failed with status ${response.status}: ${errDetail}`,
+      };
+    }
+
+    const data = (await response.json()) as any;
+    const content = data.choices?.[0]?.message?.content || '';
+    if (content && typeof content === 'string' && content.trim()) {
+      return {
+        text: content.trim(),
+        durationMs,
+      };
+    }
+
+    return {
+      text: '',
+      durationMs,
+      error: 'OpenRouter returned empty response content',
+    };
+  } catch (err: any) {
+    clearTimeout(timeoutHandle);
+    const durationMs = Date.now() - startTime;
+    return {
+      text: '',
+      durationMs,
+      error: err?.message || 'OpenRouter network request failed',
+    };
+  }
+}
+
+/**
  * Safely calls Gemini API using official SDK structure and search grounding
  */
 export async function callGeminiSafe(
@@ -65,9 +158,20 @@ export async function callGeminiSafe(
     jsonResponse?: boolean;
     timeoutMs?: number;
   } = {}
-): Promise<{ text: string; rawResponse?: any; durationMs: number; isFallback?: boolean; error?: string }> {
+): Promise<{ text: string; rawResponse?: any; durationMs: number; isFallback?: boolean; isQuotaExhausted?: boolean; error?: string }> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey || !apiKey.trim()) {
+    if (process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY.trim()) {
+      const orRes = await callOpenRouterSafe(prompt, { systemPrompt: options.systemPrompt, timeoutMs: options.timeoutMs });
+      if (orRes.text) {
+        return {
+          text: orRes.text,
+          durationMs: orRes.durationMs,
+          isFallback: true,
+          isQuotaExhausted: false,
+        };
+      }
+    }
     return {
       text: '',
       durationMs: 0,
@@ -96,6 +200,8 @@ export async function callGeminiSafe(
         config.tools = [{ googleSearch: {} }];
       }
 
+      console.log(`[Gemini Request Diagnosis] Calling model: ${model}, useSearch: ${Boolean(options.useSearch)}, toolsCount: ${Array.isArray(config.tools) ? config.tools.length : 0}`);
+
       let timeoutHandle: any;
       const response = await Promise.race([
         ai.models.generateContent({
@@ -111,6 +217,25 @@ export async function callGeminiSafe(
       });
 
       const durationMs = Date.now() - startTime;
+      const firstCandidate = response?.candidates?.[0] as any;
+      const rawGrounding = firstCandidate?.groundingMetadata || firstCandidate?.grounding_metadata || (response as any)?.groundingMetadata || (response as any)?.grounding_metadata;
+      const rawChunks = rawGrounding?.groundingChunks || rawGrounding?.grounding_chunks;
+      const rawQueries = rawGrounding?.webSearchQueries || rawGrounding?.web_search_queries;
+
+      const hasGrounding = Boolean(rawGrounding);
+      const chunksCount = Array.isArray(rawChunks) ? rawChunks.length : 0;
+      const queriesCount = Array.isArray(rawQueries) ? rawQueries.length : 0;
+
+      console.log(
+        `[Gemini Response Diagnosis] Model: ${model}, textLength: ${response?.text?.length || 0}, durationMs: ${durationMs}, hasGroundingMeta: ${hasGrounding}, webQueriesCount: ${queriesCount}, groundingChunksCount: ${chunksCount}`
+      );
+
+      if (hasGrounding && chunksCount === 0) {
+        console.log(
+          `[Gemini Grounding Notice] Model ${model} returned groundingMetadata but groundingChunks was empty. Web search queries used: ${JSON.stringify(rawQueries || [])}`
+        );
+      }
+
       if (response && response.text && response.text.trim()) {
         return {
           text: response.text.trim(),
@@ -121,7 +246,37 @@ export async function callGeminiSafe(
       }
     } catch (err: any) {
       lastError = err;
-      console.warn(`[GeminiService] Model ${model} call failed:`, err?.message || err);
+      const is429 = err?.status === 429 || String(err?.message || '').includes('429') || String(err?.message || '').includes('RESOURCE_EXHAUSTED');
+      console.warn(
+        `[Gemini Safe Call Diagnosis] Model ${model} call failed (status: ${err?.status || err?.code || 'unknown'}, isQuotaExhausted: ${is429}, searchToolEnabled: ${Boolean(options.useSearch)}):`,
+        err?.message || err
+      );
+    }
+  }
+
+  const isQuotaOrPermissionError = Boolean(
+    lastError?.status === 429 ||
+    lastError?.status === 403 ||
+    lastError?.status === 401 ||
+    String(lastError?.message || '').includes('429') ||
+    String(lastError?.message || '').includes('RESOURCE_EXHAUSTED') ||
+    String(lastError?.message || '').includes('permission') ||
+    String(lastError?.message || '').includes('Caller does not have permission')
+  );
+
+  if (isQuotaOrPermissionError && process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY.trim()) {
+    console.log('[Gemini Fallback] Gemini unavailable due to quota or permission error. Falling back to OpenRouter...');
+    const orResult = await callOpenRouterSafe(prompt, {
+      systemPrompt: options.systemPrompt,
+      timeoutMs: options.timeoutMs,
+    });
+    if (orResult.text) {
+      return {
+        text: orResult.text,
+        durationMs: orResult.durationMs,
+        isFallback: true,
+        isQuotaExhausted: true,
+      };
     }
   }
 
@@ -129,40 +284,168 @@ export async function callGeminiSafe(
     text: '',
     durationMs: 0,
     isFallback: true,
+    isQuotaExhausted: isQuotaOrPermissionError,
     error: lastError?.message || 'Gemini model request failed',
   };
 }
 
 /**
- * Extracts citations strictly from genuine groundingMetadata returned by the Gemini API
+ * Validates and normalizes HTTP/HTTPS URLs for search sources.
+ * Rejects malformed strings, invalid schemes, and empty hosts.
+ */
+export function validateAndNormalizeUrl(rawUri: any): { isValid: boolean; normalizedUrl: string; cleanHost: string } {
+  if (!rawUri || typeof rawUri !== 'string') {
+    return { isValid: false, normalizedUrl: '', cleanHost: '' };
+  }
+  const trimmed = rawUri.trim();
+  if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+    return { isValid: false, normalizedUrl: '', cleanHost: '' };
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return { isValid: false, normalizedUrl: '', cleanHost: '' };
+    }
+    const hostname = parsed.hostname.toLowerCase().trim();
+    if (!hostname || hostname.length < 3 || (!hostname.includes('.') && hostname !== 'localhost')) {
+      return { isValid: false, normalizedUrl: '', cleanHost: '' };
+    }
+
+    const utmParams = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'ref', 'source'];
+    for (const p of utmParams) {
+      parsed.searchParams.delete(p);
+    }
+
+    return {
+      isValid: true,
+      normalizedUrl: parsed.href,
+      cleanHost: hostname.replace(/^www\./, ''),
+    };
+  } catch {
+    return { isValid: false, normalizedUrl: '', cleanHost: '' };
+  }
+}
+
+export function generateResearchSubqueries(query: string, isArabic: boolean): string[] {
+  const cleanQ = typeof query === 'string' ? query.trim() : '';
+  if (!cleanQ || cleanQ.length < 25 || /^(\d+|hi|hello|مرحبا|أهلاً)/i.test(cleanQ)) {
+    return [cleanQ || 'query'];
+  }
+
+  const subqueries = [cleanQ];
+  if (isArabic) {
+    subqueries.push(`${cleanQ} أحدث التطورات والبيانات الرسمية`);
+    subqueries.push(`${cleanQ} مقارنة تحليلية وتحديات`);
+  } else {
+    subqueries.push(`${cleanQ} official updates and technical documentation`);
+    subqueries.push(`${cleanQ} comparative analysis and challenges`);
+  }
+  return subqueries.slice(0, 3);
+}
+
+/**
+ * Extracts citations strictly from genuine groundingMetadata and citationMetadata returned by the Gemini API.
+ * Never fabricates or synthesizes fake sources when grounding metadata is absent.
  */
 export function extractSources(response: any): SearchSource[] {
   const sources: SearchSource[] = [];
-  const groundingChunks = response?.candidates?.[0]?.groundingMetadata?.groundingChunks;
+  if (!response) return sources;
 
-  if (Array.isArray(groundingChunks)) {
-    for (const chunk of groundingChunks) {
-      const uri = chunk.web?.uri;
-      if (uri && typeof uri === 'string' && uri.startsWith('http')) {
-        let title = (chunk.web?.title || '').trim();
-        if (!title) {
-          try {
-            title = new URL(uri).hostname.replace(/^www\./, '');
-          } catch {
-            title = 'Web Reference';
-          }
-        }
-        if (!sources.some((s) => s.url === uri)) {
-          sources.push({
-            title,
-            url: uri,
-            snippet: chunk.web?.snippet || undefined,
-          });
-        }
+  const seenUrls = new Set<string>();
+
+  // Helper to safely append a genuine, validated web source
+  const addSource = (rawUri: any, rawTitle: any, rawSnippet?: any) => {
+    const { isValid, normalizedUrl, cleanHost } = validateAndNormalizeUrl(rawUri);
+    if (!isValid || seenUrls.has(normalizedUrl)) {
+      return;
+    }
+
+    seenUrls.add(normalizedUrl);
+
+    let title = typeof rawTitle === 'string' ? rawTitle.trim() : '';
+    if (!title || title.toLowerCase() === 'undefined' || title.toLowerCase() === 'null') {
+      title = cleanHost || 'Web Source';
+    }
+
+    let snippet: string | undefined;
+    if (typeof rawSnippet === 'string' && rawSnippet.trim()) {
+      snippet = rawSnippet.trim();
+    }
+
+    sources.push({
+      title,
+      url: normalizedUrl,
+      snippet,
+    });
+  };
+
+  // 1. Google Search Grounding Chunks (Primary Gemini API format)
+  // Supports camelCase and snake_case across all candidates and top-level response
+  const candidates: any[] = Array.isArray(response?.candidates) ? response.candidates : [];
+
+  for (const cand of candidates) {
+    const meta = cand?.groundingMetadata || cand?.grounding_metadata;
+    const chunks = meta?.groundingChunks || meta?.grounding_chunks;
+    if (Array.isArray(chunks)) {
+      for (const chunk of chunks) {
+        if (!chunk || typeof chunk !== 'object') continue;
+        const uri = chunk.web?.uri || chunk.web?.url || chunk.webUri || chunk.web_uri || chunk.uri || chunk.url;
+        const title = chunk.web?.title || chunk.title || chunk.web_title;
+        const snippet = chunk.web?.snippet || chunk.snippet || chunk.text;
+        addSource(uri, title, snippet);
       }
     }
   }
 
+  // Also inspect top-level groundingMetadata if present on the response directly
+  const topMeta = response?.groundingMetadata || response?.grounding_metadata;
+  const topChunks = topMeta?.groundingChunks || topMeta?.grounding_chunks;
+  if (Array.isArray(topChunks)) {
+    for (const chunk of topChunks) {
+      if (!chunk || typeof chunk !== 'object') continue;
+      const uri = chunk.web?.uri || chunk.web?.url || chunk.webUri || chunk.web_uri || chunk.uri || chunk.url;
+      const title = chunk.web?.title || chunk.title || chunk.web_title;
+      const snippet = chunk.web?.snippet || chunk.snippet || chunk.text;
+      addSource(uri, title, snippet);
+    }
+  }
+
+  // 2. Citation Metadata (Supported fallback format in Gemini SDK)
+  for (const cand of candidates) {
+    const citations =
+      cand?.citationMetadata?.citations ||
+      cand?.citationMetadata?.citationSources ||
+      cand?.citation_metadata?.citations ||
+      cand?.citation_metadata?.citation_sources;
+    if (Array.isArray(citations)) {
+      for (const item of citations) {
+        if (!item || typeof item !== 'object') continue;
+        const uri = item.uri || item.url;
+        const title = item.title;
+        const snippet = item.snippet;
+        addSource(uri, title, snippet);
+      }
+    }
+  }
+
+  const topCitations =
+    response?.citationMetadata?.citations ||
+    response?.citationMetadata?.citationSources ||
+    response?.citation_metadata?.citations ||
+    response?.citation_metadata?.citation_sources;
+
+  if (Array.isArray(topCitations)) {
+    for (const item of topCitations) {
+      if (!item || typeof item !== 'object') continue;
+      const uri = item.uri || item.url;
+      const title = item.title;
+      const snippet = item.snippet;
+      addSource(uri, title, snippet);
+    }
+  }
+
+  console.log(`[extractSources Diagnosis] Inspected ${candidates.length} candidates. Valid extracted sources: ${sources.length}`);
   return sources.slice(0, 10);
 }
 
@@ -170,11 +453,33 @@ export function extractSources(response: any): SearchSource[] {
  * Extracts web search queries actually submitted by the grounding tool
  */
 export function extractSearchQueries(response: any): string[] {
-  const webQueries = response?.candidates?.[0]?.groundingMetadata?.webSearchQueries;
-  if (Array.isArray(webQueries)) {
-    return webQueries.filter((q: any) => typeof q === 'string' && q.trim().length > 0);
+  if (!response) return [];
+  const queries: string[] = [];
+  const candidates: any[] = Array.isArray(response?.candidates) ? response.candidates : [];
+
+  for (const cand of candidates) {
+    const meta = cand?.groundingMetadata || cand?.grounding_metadata;
+    const raw = meta?.webSearchQueries || meta?.web_search_queries;
+    if (Array.isArray(raw)) {
+      for (const q of raw) {
+        if (typeof q === 'string' && q.trim() && !queries.includes(q.trim())) {
+          queries.push(q.trim());
+        }
+      }
+    }
   }
-  return [];
+
+  const topMeta = response?.groundingMetadata || response?.grounding_metadata;
+  const topRaw = topMeta?.webSearchQueries || topMeta?.web_search_queries;
+  if (Array.isArray(topRaw)) {
+    for (const q of topRaw) {
+      if (typeof q === 'string' && q.trim() && !queries.includes(q.trim())) {
+        queries.push(q.trim());
+      }
+    }
+  }
+
+  return queries;
 }
 
 /**
@@ -199,6 +504,10 @@ export async function executeSearch(params: {
   // MODE 1: FAST SEARCH (Live Grounded)
   // ----------------------------------------------------
   if (mode === 'fast') {
+    if (demoMode) {
+      return getDemoFastResult(query, isArabic, startTime);
+    }
+
     const systemPrompt = isArabic
       ? `أنت المحرك الذكي لمنصة "OmniSearch AI" (أومني سيرش).
 قواعد تقديم النتائج:
@@ -213,25 +522,89 @@ Guidelines:
 
     const promptText = `User Query: "${query}"${fileContent ? `\nAttached file (${fileName}):\n${fileContent.slice(0, 4000)}` : ''}`;
 
-    const { text, rawResponse, error } = await callGeminiSafe(promptText, {
+    let text = '';
+    let sources: SearchSource[] = [];
+    let searchQueries: string[] = [query];
+    let fallbackUsed = false;
+
+    // 1. Attempt Google Search Grounding first
+    const geminiCall = await callGeminiSafe(promptText, {
       systemPrompt,
       useSearch: true,
     });
+
+    const isGoogle429 = Boolean(
+      geminiCall.isQuotaExhausted ||
+      geminiCall.error?.includes('429') ||
+      geminiCall.error?.includes('RESOURCE_EXHAUSTED')
+    );
+
+    if (geminiCall.text && !isGoogle429) {
+      const extracted = geminiCall.rawResponse ? extractSources(geminiCall.rawResponse) : [];
+      if (extracted.length > 0) {
+        text = geminiCall.text;
+        sources = extracted;
+        searchQueries = geminiCall.rawResponse ? extractSearchQueries(geminiCall.rawResponse) : [query];
+      }
+    }
+
+    // 2. Fall back to Tavily if Google Search failed (429 or error) or returned 0 sources
+    if ((!text || sources.length === 0 || isGoogle429) && isTavilyConfigured()) {
+      console.log(
+        `[Fast Search] Google Grounding unavailable or 0 sources (is429: ${isGoogle429}). Attempting Tavily search fallback...`
+      );
+      const tavilyRes = await searchTavily(query, {
+        searchDepth: 'basic',
+        maxResults: 5,
+        includeAnswer: true,
+      });
+
+      if (tavilyRes.success && tavilyRes.sources.length > 0) {
+        sources = tavilyRes.sources;
+        searchQueries = tavilyRes.queriesUsed;
+        fallbackUsed = true;
+
+        const webContext = buildTavilySearchContext(tavilyRes);
+        const enrichedPrompt = `User Query: "${query}"${fileContent ? `\nAttached file (${fileName}):\n${fileContent.slice(0, 4000)}` : ''}\n\n${webContext}\n\nInstructions: Deliver a direct, factual answer grounded in the verified web search context above. Format clearly with concise bullet points and tables.`;
+
+        const groundedGemini = await callGeminiSafe(enrichedPrompt, {
+          systemPrompt,
+          useSearch: false, // Avoids Google Search 429 quota error
+        });
+
+        if (groundedGemini.text) {
+          text = groundedGemini.text;
+        } else if (tavilyRes.answer) {
+          text = tavilyRes.answer;
+        }
+      }
+    }
+
+    // 3. If still no text, use ungrounded Gemini text or try ungrounded call
+    if (!text && geminiCall.text) {
+      text = geminiCall.text;
+    } else if (!text) {
+      const ungrounded = await callGeminiSafe(promptText, {
+        systemPrompt,
+        useSearch: false,
+      });
+      if (ungrounded.text) {
+        text = ungrounded.text;
+      }
+    }
 
     if (!text) {
       if (demoMode) {
         return getDemoFastResult(query, isArabic, startTime);
       }
       throw new Error(
-        error ||
+        geminiCall.error ||
           (isArabic
             ? 'تعذر الوصول إلى مزود الذكاء الاصطناعي (Gemini). يرجى التأكد من ضبط GEMINI_API_KEY.'
             : 'AI Provider (Gemini) is unavailable. Please check GEMINI_API_KEY.')
       );
     }
 
-    const sources = rawResponse ? extractSources(rawResponse) : [];
-    const searchQueries = rawResponse ? extractSearchQueries(rawResponse) : [query];
     const keyTakeaways = extractKeyTakeaways(text, isArabic);
 
     return {
@@ -245,7 +618,7 @@ Guidelines:
         searchQueriesUsed: searchQueries,
         totalSources: sources.length,
         processingTimeMs: Date.now() - startTime,
-        fallbackUsed: false,
+        fallbackUsed,
         serverLive: true,
       },
     };
@@ -255,18 +628,31 @@ Guidelines:
   // MODE 2: DEEP RESEARCH
   // ----------------------------------------------------
   if (mode === 'deep') {
+    if (demoMode) {
+      return getDemoDeepResult(query, isArabic, startTime);
+    }
+
     const systemPrompt = isArabic
       ? `أنت المحرك المتقدم للبحث المعمق (Deep Research) في "OmniSearch AI".
-قواعد التقرير:
-1. تقرير استقصائي مهني مفصل ومحكم.
-2. ابدأ بالخلاصة التنفيذية المباشرة (Executive Summary).
-3. المحاور الرئيسية، المعطيات الإحصائية، وجدول مقارن للمزايا والمحاذير.
-4. التوصيات الاستراتيجية والخطوات العملية الواضحة.`
+قواعد التقرير والتوثيق الصارمة:
+1. يجب استخدام أداة البحث في الويب للبحث الفعلي عن أحدث المعلومات، وتدقيق الحقائق، وتوثيق المحاور بمصادر حقيقية مسترجعة من الويب.
+2. تقرير استقصائي مهني مفصل ومحكم يبدأ بالخلاصة التنفيذية المباشرة (Executive Summary).
+3. المحاور الرئيسية، المعطيات الإحصائية، وجدول مقارن للمزايا والمحاذير، والتوصيات الاستراتيجية.
+4. التوثيق الحقيقي ومنع انتحال المصادر:
+   - يمنع تماماً اختراع أو افتراض قسم مراجع أو قائمة مصادر أو روابط لم تُرجعها أداة البحث فعلياً.
+   - لا تذكر أسماء مؤسسات أو منظمات أو مواقع على أنها مصادر استُخدمت أو تم التحقق منها في هذا البحث ما لم تكن مسترجعة فعلياً عبر أداة البحث.
+   - يمكنك ذكر أسماء الجهات فقط ضمن السياق الموضوعي العام للحقائق، ولكن يمنع تماماً وضعها في صيغة إحالة مرجعية أو توثيق ما لم تتوفر بيانات مصدر حقيقية تدعم الإحالة.
+   - إذا لم تتوفر مصادر خارجية مسترجعة، وضّح صراحة أن التقرير يستند إلى المعرفة التحليلية للذكاء الاصطناعي دون مراجع ويب في هذه الجلسة.`
       : `You are the Deep Research Engine for "OmniSearch AI".
-Provide an exhaustive, structured research report with:
-1. Direct Executive Summary.
-2. Multi-dimensional technical breakdown with comparative tables.
-3. Actionable strategic recommendations.`;
+Strict Report & Grounding Guidelines:
+1. You MUST actively use web search to search the live web, retrieve fresh facts, and ground all findings in verified web citations.
+2. Comprehensive investigative report starting with a direct Executive Summary.
+3. In-depth technical breakdown with comparative tables and actionable strategic recommendations.
+4. Truthful Grounding & Anti-Hallucination Rules:
+   - NEVER invent or hallucinate a "References" or "Sources" section or list websites/organizations as consulted sources.
+   - Do NOT present names of institutions, agencies, or websites as sources used or verified in this research unless genuine search grounding data was retrieved.
+   - You may mention entities strictly in general factual context, but never in a citation, reference, or bibliography format unless supported by actual source data.
+   - If no external web sources were returned, explicitly state that findings are synthesized from model knowledge without independent external web citations in this session.`;
 
     const promptText = `Conduct deep investigative research on: "${query}"${fileContent ? `\nReferenced Document (${fileName}):\n${fileContent.slice(0, 6000)}` : ''}`;
 
@@ -290,34 +676,148 @@ Provide an exhaustive, structured research report with:
       },
     });
 
-    const { text, rawResponse, error } = await callGeminiSafe(promptText, {
+    let text = '';
+    let sources: SearchSource[] = [];
+    let searchQueries: string[] = [query];
+    let fallbackUsed = false;
+    let searchEngineUsed: 'google_grounding' | 'tavily' | 'none' = 'none';
+
+    // 1. Attempt Google Search Grounding first
+    const geminiCall = await callGeminiSafe(promptText, {
       systemPrompt,
       useSearch: true,
       timeoutMs: 35000,
     });
 
+    const isGoogle429 = Boolean(
+      geminiCall.isQuotaExhausted ||
+      geminiCall.error?.includes('429') ||
+      geminiCall.error?.includes('RESOURCE_EXHAUSTED')
+    );
+
+    if (geminiCall.text && !isGoogle429) {
+      const extracted = geminiCall.rawResponse ? extractSources(geminiCall.rawResponse) : [];
+      if (extracted.length > 0) {
+        text = geminiCall.text;
+        sources = extracted;
+        searchQueries = geminiCall.rawResponse ? extractSearchQueries(geminiCall.rawResponse) : [query];
+        searchEngineUsed = 'google_grounding';
+      }
+    }
+
+    // 2. Prioritize Deep Research with multi-aspect Tavily search fallback if Google failed with 429 or produced 0 sources
+    if ((!text || sources.length === 0 || isGoogle429) && isTavilyConfigured()) {
+      console.log(
+        `[Deep Research] Google Grounding unavailable or 0 sources (is429: ${isGoogle429}). Triggering multi-aspect Tavily advanced search...`
+      );
+
+      const subqueries = generateResearchSubqueries(query, isArabic);
+      const allSourcesMap = new Map<string, SearchSource>();
+      const allQueriesUsed: string[] = [];
+      let combinedAnswer = '';
+
+      for (const sq of subqueries) {
+        allQueriesUsed.push(sq);
+        const tavilyRes = await searchTavily(sq, {
+          searchDepth: 'advanced',
+          maxResults: 6,
+          includeAnswer: true,
+        });
+        if (tavilyRes.success) {
+          if (tavilyRes.answer && !combinedAnswer) {
+            combinedAnswer = tavilyRes.answer;
+          }
+          for (const src of tavilyRes.sources) {
+            const { isValid, normalizedUrl } = validateAndNormalizeUrl(src.url);
+            if (isValid && !allSourcesMap.has(normalizedUrl)) {
+              allSourcesMap.set(normalizedUrl, src);
+            }
+          }
+        }
+      }
+
+      const mergedSources = Array.from(allSourcesMap.values());
+
+      if (mergedSources.length > 0) {
+        sources = mergedSources;
+        searchQueries = allQueriesUsed;
+        searchEngineUsed = 'tavily';
+        fallbackUsed = true;
+
+        onProgress?.({
+          type: 'sources_discovered',
+          payload: { sources },
+        });
+
+        const syntheticResult = {
+          query,
+          sources: mergedSources,
+          answer: combinedAnswer,
+          queriesUsed: allQueriesUsed,
+          success: true,
+        };
+
+        const webContext = buildTavilySearchContext(syntheticResult);
+        const enrichedPrompt = isArabic
+          ? `استعلام المستخدم: "${query}"${fileContent ? `\nالمستند المرفق (${fileName}):\n${fileContent.slice(0, 6000)}` : ''}\n\n${webContext}\n\nتعليمات صارمة للبحث المعمق (توليف عالي الجودة والأدلة):
+1. نظم النتائج منطقياً حسب الأسئلة الفرعية أو الأبعاد التحليلية.
+2. قارن بين المصادر المختلفة مبرزاً نقاط الاتفاق والتكامل وكذلك أي تناقضات أو اختلافات بينها.
+3. ميز بوضوح بين الحقائق المتحققة من المصادر والتقديرات، مع بيان ما يظل غير معروف أو غير مدعوم.
+4. تجنب تكرار النقاط عبر الأقسام المختلفة.
+5. قدم تقريراً مهيكلاً يتضمن: الخلاصة التنفيذية، النتائج الرئيسية (حسب الأبعاد)، الأدلة والمقارنات المدعومة، القيود أو التناقضات، الاستنتاج النهائي، وروابط المصادر المباشرة.
+6. لا تختلق روابط أو إحالات خارج المصادر المسترجعة.`
+          : `User Query: "${query}"${fileContent ? `\nReferenced Document (${fileName}):\n${fileContent.slice(0, 6000)}` : ''}\n\n${webContext}\n\nStrict Instructions for Deep Research (Comprehensive Evidence-Based Synthesis):\n1. Organize evidence logically by subquestions or analytical dimensions.\n2. Compare relevant sources, identifying agreements, complementary insights, and any contradictions.\n3. Clearly distinguish verified facts from model interpretation and state what remains unknown or unsupported.\n4. Avoid repeating the same point across sections.\n5. Structure output into: Executive Summary, Main Findings (organized by subquestion/dimensions), Supporting Evidence & Comparisons, Limitations or Conflicting Evidence, Clear Conclusion, and Direct Source Links.\n6. Do NOT invent URLs or citations outside of the retrieved sources.`;
+
+        const groundedGemini = await callGeminiSafe(enrichedPrompt, {
+          systemPrompt,
+          useSearch: false, // Prevents triggering Google Search 429 quota error!
+          timeoutMs: 35000,
+        });
+
+        if (groundedGemini.text) {
+          text = groundedGemini.text;
+        } else if (combinedAnswer) {
+          text = combinedAnswer;
+        } else if (mergedSources.length > 0) {
+          text = `# Deep Research Report: ${query}\n\n## Executive Summary\nSynthesized from verified web search results.\n\n## Main Findings\n${mergedSources.map(s => `- **${s.title}**: ${s.snippet || s.url}`).join('\n')}`;
+        }
+      }
+    }
+
+    // 3. If still no text, use ungrounded Gemini
+    if (!text && geminiCall.text) {
+      text = geminiCall.text;
+    } else if (!text) {
+      const ungrounded = await callGeminiSafe(promptText, {
+        systemPrompt,
+        useSearch: false,
+        timeoutMs: 35000,
+      });
+      if (ungrounded.text) {
+        text = ungrounded.text;
+      }
+    }
+
     if (!text) {
       if (demoMode) {
         return getDemoDeepResult(query, isArabic, startTime);
       }
-      throw new Error(
-        error ||
-          (isArabic
-            ? 'فشل استدعاء محرك البحث المعمق. يرجى التحقق من اتصال المزود أو مفتاح API.'
-            : 'Deep research provider call failed. Check provider connectivity or API keys.')
-      );
+      text = isArabic ? `تقرير استقصائي حول: ${query}` : `Investigative report on: ${query}`;
     }
 
-    const sources = rawResponse ? extractSources(rawResponse) : [];
-    const searchQueries = rawResponse ? extractSearchQueries(rawResponse) : [query];
+    console.log(
+      `[Deep Research Diagnosis] Query: "${query}", Engine: ${searchEngineUsed}, ExtractedSources: ${sources.length}, SearchQueriesUsed: ${searchQueries.length}, IsGrounded: ${sources.length > 0}`
+    );
 
-    if (sources.length > 0) {
+    if (sources.length > 0 && searchEngineUsed !== 'tavily') {
       onProgress?.({
         type: 'sources_discovered',
         payload: { sources },
       });
     }
 
+    const hasSources = sources.length > 0;
+    const engineTag = searchEngineUsed === 'tavily' ? ' (Tavily)' : '';
     const phases: DeepResearchPhase[] = [
       {
         id: '1',
@@ -328,16 +828,20 @@ Provide an exhaustive, structured research report with:
       {
         id: '2',
         title: isArabic ? 'التصفح المباشر واسترجاع المراجع' : 'Live Web Grounding & Source Retrieval',
-        status: sources.length > 0 ? 'completed' : 'completed',
-        details: sources.length > 0
-          ? (isArabic ? `تم استرجاع ${sources.length} مصادر موثقة من الويب` : `Retrieved ${sources.length} verified web sources`)
-          : (isArabic ? 'تم إجراء البحث بالاعتماد على قاعدة المعرفة الشاملة' : 'Synthesized from global model knowledge base'),
+        status: hasSources ? 'completed' : 'unverified',
+        details: hasSources
+          ? (isArabic ? `تم استرجاع ${sources.length} مصادر موثقة من الويب${engineTag}` : `Retrieved ${sources.length} verified web sources${engineTag}`)
+          : (isArabic ? 'لم يُرجع مزود البحث روابط مصادر موثقة لهذا الاستعلام' : 'No verified external source links returned by grounding provider'),
       },
       {
         id: '3',
-        title: isArabic ? 'التدقيق والتحليل متعدد الأبعاد' : 'Multi-Perspective Synthesis',
+        title: hasSources
+          ? (isArabic ? 'التدقيق والمطابقة متعددة الأبعاد' : 'Multi-Perspective Synthesis')
+          : (isArabic ? 'التحليل المعرفي للنموذج' : 'Model Synthesis & Knowledge Analysis'),
         status: 'completed',
-        details: isArabic ? 'تمت المطابقة التحليلية والتنسيق' : 'Cross-validated findings across dimensions',
+        details: hasSources
+          ? (isArabic ? 'تمت المطابقة والتحقق بالاستناد إلى المصادر المسترجعة' : 'Cross-validated findings against retrieved sources')
+          : (isArabic ? 'تحليل مبني على قاعدة معرفة النموذج (غير مطابق مع مصادر مستقلة)' : 'Synthesized from model knowledge (not cross-referenced with independent sources)'),
       },
       {
         id: '4',
@@ -360,20 +864,23 @@ Provide an exhaustive, structured research report with:
       payload: phases[3],
     });
 
+    // Align detailed report strictly with genuine sources
+    const alignedReport = alignReportWithSources(text, sources, isArabic);
+
     return {
       query,
       mode: 'deep',
-      summary: extractSummaryIntro(text),
-      detailedReport: text,
+      summary: extractSummaryIntro(alignedReport),
+      detailedReport: alignedReport,
       sources,
-      keyTakeaways: extractKeyTakeaways(text, isArabic),
+      keyTakeaways: extractKeyTakeaways(alignedReport, isArabic),
       deepResearchPhases: phases,
       suggestedQueries: generateRelatedQueries(query, isArabic),
       searchMetadata: {
         searchQueriesUsed: searchQueries,
         totalSources: sources.length,
         processingTimeMs: Date.now() - startTime,
-        fallbackUsed: false,
+        fallbackUsed,
         serverLive: true,
       },
     };
@@ -888,9 +1395,10 @@ function getDemoFastResult(query: string, isArabic: boolean, startTime: number):
 }
 
 function getDemoDeepResult(query: string, isArabic: boolean, startTime: number): SearchResultPayload {
-  const report = isArabic
-    ? `# [وضع العرض التجريبي] تقرير بحث استقصائي: ${query}\n\nهذا تقرير توضيحي يُعرض في بيئة التطوير فقط.`
-    : `# [Demonstration Mode] Deep Research Report: ${query}\n\nThis is a demonstration report shown only in development mode.`;
+  const rawReport = isArabic
+    ? `# [وضع العرض التجريبي] تقرير بحث استقصائي: ${query}\n\nهذا تقرير استقصائي توضيحي يُعرض في بيئة المعاينة والتطوير.`
+    : `# [Demonstration Mode] Deep Research Report: ${query}\n\nThis is a demonstration investigative report shown only in development mode.`;
+  const report = alignReportWithSources(rawReport, [], isArabic);
   return {
     query,
     mode: 'deep',
@@ -898,7 +1406,9 @@ function getDemoDeepResult(query: string, isArabic: boolean, startTime: number):
     detailedReport: report,
     sources: [],
     deepResearchPhases: [
-      { id: '1', title: 'Demo Scope', status: 'completed', details: 'Demo mode active' },
+      { id: '1', title: isArabic ? 'تفكيك الاستعلام (تجريبي)' : 'Scoping (Demo)', status: 'completed', details: isArabic ? 'نمط العرض التجريبي نشط' : 'Demonstration mode active' },
+      { id: '2', title: isArabic ? 'استرجاع المراجع (تجريبي)' : 'Live Grounding (Demo)', status: 'unverified', details: isArabic ? 'لا توجد مصادر حية في وضع العرض التجريبي' : 'No live sources in demo mode' },
+      { id: '3', title: isArabic ? 'الصياغة والتحليل (تجريبي)' : 'Synthesis (Demo)', status: 'completed', details: isArabic ? 'تقرير توضيحي للمعاينة' : 'Illustrative preview' },
     ],
     searchMetadata: {
       totalSources: 0,

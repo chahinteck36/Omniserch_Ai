@@ -36,7 +36,9 @@ describe('Task D & F: API Validation, Allowlist, and Secret Protection', () => {
     const res = await simulateRequest('GET', '/health');
     assert.strictEqual(res.status, 200);
     assert.strictEqual(typeof res.body.geminiConfigured, 'boolean');
+    assert.strictEqual(typeof res.body.tavilyConfigured, 'boolean');
     assert.strictEqual(res.body.GEMINI_API_KEY, undefined);
+    assert.strictEqual(res.body.TAVILY_API_KEY, undefined);
     assert.strictEqual(res.body.OPENROUTER_API_KEY, undefined);
   });
 

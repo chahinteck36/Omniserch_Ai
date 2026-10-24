@@ -17,6 +17,8 @@ import {
   getAuthoritativeQuotaAsync,
   consumeAuthoritativeQuotaAsync,
   verifySignedUserToken,
+  isOwnerEmail,
+  createSignedUserToken,
 } from './licenseStore';
 import {
   createResearchSessionDb,
@@ -73,6 +75,7 @@ apiRouter.get('/health', (_req: Request, res: Response) => {
     timestamp: new Date().toISOString(),
     service: 'OmniSearch AI Core Platform',
     geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+    tavilyConfigured: Boolean(process.env.TAVILY_API_KEY),
     openRouterConfigured: Boolean(process.env.OPENROUTER_API_KEY),
   });
 });
@@ -144,6 +147,25 @@ apiRouter.post('/auth/verify', requireAuth, (req: AuthRequest, res: Response) =>
     valid: true,
     user: req.user,
   });
+});
+
+apiRouter.post('/auth/token', async (req: Request, res: Response) => {
+  const { email } = req.body;
+  if (!email || typeof email !== 'string') {
+    res.status(400).json({ error: 'Email is required' });
+    return;
+  }
+  if (isOwnerEmail(email)) {
+    const token = createSignedUserToken({
+      email: email.trim().toLowerCase(),
+      tier: 'enterprise',
+      expiresAt: Date.now() + 365 * 24 * 60 * 60 * 1000,
+      licenseCode: 'OMNI-OWNER-MASTER',
+    });
+    res.json({ success: true, token, tier: 'enterprise' });
+    return;
+  }
+  res.status(403).json({ error: 'Direct token issuance is only available for authorized accounts' });
 });
 
 // ----------------------------------------------------
@@ -309,6 +331,10 @@ apiRouter.post('/search', standardLimiter, async (req: Request, res: Response) =
       }
     }
 
+    if (userEmail && isOwnerEmail(userEmail)) {
+      isUserPaid = true;
+    }
+
     if (!isUserPaid && !demoMode) {
       const quota = await getAuthoritativeQuotaAsync(userEmail, ip);
       if (quota.isExhausted) {
@@ -430,6 +456,10 @@ apiRouter.all('/search/stream', standardLimiter, async (req: Request, res: Respo
     if (verified.valid && verified.user && verified.user.tier !== 'free') {
       isUserPaid = true;
     }
+  }
+
+  if (userEmail && isOwnerEmail(userEmail)) {
+    isUserPaid = true;
   }
 
   if (!isUserPaid && !demoMode) {

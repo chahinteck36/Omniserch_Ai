@@ -1,16 +1,48 @@
 import React from 'react';
-import { ExternalLink, Globe, ShieldCheck } from 'lucide-react';
+import { ExternalLink, Globe, ShieldCheck, AlertCircle } from 'lucide-react';
 import { SearchSource, Language } from '../types';
 
 interface SourceCitationsProps {
   sources: SearchSource[];
   language: Language;
+  showWhenEmpty?: boolean;
 }
 
-export const SourceCitations: React.FC<SourceCitationsProps> = ({ sources, language }) => {
+export const SourceCitations: React.FC<SourceCitationsProps> = ({
+  sources,
+  language,
+  showWhenEmpty = false,
+}) => {
   const isAr = language === 'ar';
+  const count = sources?.length || 0;
 
-  if (!sources || sources.length === 0) return null;
+  if (count === 0) {
+    if (!showWhenEmpty) return null;
+
+    return (
+      <div className="w-full rounded-2xl border border-slate-800/80 bg-slate-900/30 p-4 sm:p-5">
+        <div className="mb-2.5 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Globe className="h-4 w-4 text-slate-400" />
+            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">
+              {isAr ? 'المصادر والمراجع المستند إليها (0)' : 'Referenced Sources (0)'}
+            </h3>
+          </div>
+          <span className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-300">
+            {isAr ? '0 مصادر موثقة' : '0 Verified Sources'}
+          </span>
+        </div>
+        <div className="flex items-start gap-2.5 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 text-xs text-amber-200/90 leading-relaxed">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+          <p>
+            {isAr
+              ? 'لم يقم مزود البحث (Google Search Grounding) بإرجاع روابط مصادر خارجية موثقة لهذا الاستعلام. تم توليد النتائج استناداً إلى المعرفة النموذجية للذكاء الاصطناعي دون التحقق المتقاطع مع مصادر ويب مستقلة.'
+              : 'No external verified sources were returned by the grounding provider for this query. Results are synthesized from model knowledge without independent external citations.'}
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="w-full">
@@ -18,12 +50,12 @@ export const SourceCitations: React.FC<SourceCitationsProps> = ({ sources, langu
         <div className="flex items-center gap-2">
           <Globe className="h-4 w-4 text-cyan-400" />
           <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">
-            {isAr ? `المصادر الحية المستند إليها (${sources.length})` : `Verified Web Sources (${sources.length})`}
+            {isAr ? `المصادر الحية المستند إليها (${count})` : `Verified Web Sources (${count})`}
           </h3>
         </div>
-        <div className="flex items-center gap-1 text-[11px] text-slate-500">
-          <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
-          <span>{isAr ? 'روابط حية موثقة' : 'Live Verified Groundings'}</span>
+        <div className="flex items-center gap-1 text-[11px] text-emerald-400">
+          <ShieldCheck className="h-3.5 w-3.5" />
+          <span>{isAr ? `${count} روابط حية موثقة` : `${count} Grounded Citations`}</span>
         </div>
       </div>
 
@@ -31,7 +63,7 @@ export const SourceCitations: React.FC<SourceCitationsProps> = ({ sources, langu
         {sources.map((source, index) => {
           let domain = '';
           try {
-            domain = new URL(source.url).hostname.replace('www.', '');
+            domain = new URL(source.url).hostname.replace(/^www\./, '');
           } catch {
             domain = 'web source';
           }

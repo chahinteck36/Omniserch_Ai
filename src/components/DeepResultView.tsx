@@ -3,6 +3,7 @@ import Markdown from 'react-markdown';
 import {
   Microscope,
   CheckCircle2,
+  AlertCircle,
   FileDown,
   Copy,
   Check,
@@ -29,6 +30,8 @@ export const DeepResultView: React.FC<DeepResultViewProps> = ({
 }) => {
   const isAr = language === 'ar';
   const [copied, setCopied] = useState(false);
+  const sourceCount = result.sources?.length || 0;
+  const hasUnverifiedPhase = result.deepResearchPhases?.some((p) => p.status === 'unverified');
 
   const handleCopy = () => {
     const textToCopy = `# Deep Research: ${result.query}\n\n${result.detailedReport || result.summary || ''}`;
@@ -38,7 +41,12 @@ export const DeepResultView: React.FC<DeepResultViewProps> = ({
   };
 
   const handleExportMarkdown = () => {
-    const content = `# Deep Research Report: ${result.query}\nDate: ${new Date(result.timestamp).toLocaleDateString()}\n\n${result.detailedReport || result.summary || ''}\n\n## Sources\n${result.sources.map((s, i) => `${i + 1}. [${s.title}](${s.url})`).join('\n')}`;
+    const sourcesText =
+      sourceCount > 0
+        ? result.sources.map((s, i) => `${i + 1}. [${s.title}](${s.url})`).join('\n')
+        : '*(No external citations returned by search grounding)*';
+
+    const content = `# Deep Research Report: ${result.query}\nDate: ${new Date(result.timestamp).toLocaleDateString()}\n\n${result.detailedReport || result.summary || ''}\n\n## Sources (${sourceCount})\n${sourcesText}`;
     const blob = new Blob([content], { type: 'text/markdown;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -58,9 +66,17 @@ export const DeepResultView: React.FC<DeepResultViewProps> = ({
               <Microscope className="h-3 w-3" />
               {isAr ? 'تقرير استقصائي عميق (Deep Research)' : 'Multi-Phase Deep Investigation'}
             </span>
-            <span className="rounded-md border border-slate-700 bg-slate-800/60 px-2 py-0.5 text-[11px] text-slate-300">
-              {result.sources.length} {isAr ? 'مراجع تم فحصها' : 'Citations Grounded'}
-            </span>
+            {sourceCount > 0 ? (
+              <span className="flex items-center gap-1 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-300">
+                <CheckCircle2 className="h-3 w-3" />
+                {sourceCount} {isAr ? 'مصادر ويب موثقة' : 'Verified Citations'}
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-300">
+                <AlertCircle className="h-3 w-3" />
+                0 {isAr ? 'مصادر موثقة (بدون مراجع خارجية)' : 'Verified Sources (No Grounding)'}
+              </span>
+            )}
           </div>
           <h2 className="mt-1.5 text-xl font-bold text-white sm:text-2xl">
             {result.query}
@@ -107,32 +123,64 @@ export const DeepResultView: React.FC<DeepResultViewProps> = ({
               <Layers className="h-4 w-4 text-purple-400" />
               {isAr ? 'مراحل ومسار البحث الاستقصائي' : 'Autonomous Research Pipeline Steps'}
             </h3>
-            <span className="text-[11px] text-emerald-400 font-medium">
-              100% {isAr ? 'مكتمل' : 'Completed'}
-            </span>
+            {hasUnverifiedPhase ? (
+              <span className="flex items-center gap-1 text-[11px] font-medium text-amber-400">
+                <AlertCircle className="h-3.5 w-3.5" />
+                {isAr ? 'مكتمل (غير موثق بمراجع خارجية)' : 'Completed (No External Grounding)'}
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 text-[11px] font-medium text-emerald-400">
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                100% {isAr ? 'مكتمل وموثق' : 'Completed'}
+              </span>
+            )}
           </div>
 
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
-            {result.deepResearchPhases.map((phase, idx) => (
-              <div
-                key={phase.id}
-                className="flex items-start gap-2.5 rounded-xl border border-slate-800/80 bg-slate-950/60 p-3"
-              >
-                <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-500/20 text-emerald-400">
-                  <CheckCircle2 className="h-3.5 w-3.5" />
-                </div>
-                <div>
-                  <div className="text-[11px] font-bold text-slate-200">
-                    {idx + 1}. {phase.title}
+            {result.deepResearchPhases.map((phase, idx) => {
+              const isUnverified = phase.status === 'unverified';
+              return (
+                <div
+                  key={phase.id}
+                  className={`flex items-start gap-2.5 rounded-xl border p-3 ${
+                    isUnverified
+                      ? 'border-amber-500/30 bg-amber-950/20'
+                      : 'border-slate-800/80 bg-slate-950/60'
+                  }`}
+                >
+                  <div
+                    className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${
+                      isUnverified
+                        ? 'bg-amber-500/20 text-amber-400'
+                        : 'bg-emerald-500/20 text-emerald-400'
+                    }`}
+                  >
+                    {isUnverified ? (
+                      <AlertCircle className="h-3.5 w-3.5" />
+                    ) : (
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                    )}
                   </div>
-                  {phase.details && (
-                    <div className="text-[10px] text-slate-400 mt-0.5">
-                      {phase.details}
+                  <div>
+                    <div className="flex items-center gap-1.5 text-[11px] font-bold text-slate-200">
+                      <span>
+                        {idx + 1}. {phase.title}
+                      </span>
+                      {isUnverified && (
+                        <span className="rounded bg-amber-500/20 px-1 py-0.2 text-[9px] font-medium text-amber-300">
+                          {isAr ? 'غير موثق' : 'Unverified'}
+                        </span>
+                      )}
                     </div>
-                  )}
+                    {phase.details && (
+                      <div className="text-[10px] text-slate-400 mt-0.5 leading-relaxed">
+                        {phase.details}
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -144,8 +192,8 @@ export const DeepResultView: React.FC<DeepResultViewProps> = ({
         </div>
       </div>
 
-      {/* Sources Citations */}
-      <SourceCitations sources={result.sources} language={language} />
+      {/* Sources Citations (Always displays with clear indicator when 0 sources) */}
+      <SourceCitations sources={result.sources} language={language} showWhenEmpty={true} />
 
       {/* Related Queries */}
       {result.suggestedQueries && result.suggestedQueries.length > 0 && (

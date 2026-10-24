@@ -33,10 +33,13 @@ import {
   getEmailUsedSearches,
   recordEmailSearchUsage,
   isEmailQuotaExhausted,
+  isOwnerEmail,
+  setUserToken,
 } from './services/licenseService';
 import { checkAndTriggerExpirationNotice } from './services/emailService';
 import { getStoredModelsConfig } from './services/modelConfigService';
 import { executeUnifiedSearch } from './services/searchExecutionService';
+import { apiUrl } from './services/apiClient';
 
 export function App() {
   const [language, setLanguage] = useState<Language>('ar');
@@ -77,6 +80,19 @@ export function App() {
       const saved = localStorage.getItem('omnisearch_user_plan');
       if (saved) {
         const parsed = JSON.parse(saved);
+        if (parsed.email && isOwnerEmail(parsed.email)) {
+          return {
+            tier: 'enterprise',
+            name: 'Enterprise VIP (Owner)',
+            email: parsed.email,
+            totalFreeLimit: 999999,
+            usedSearches: 0,
+            licenseKey: 'OMNI-OWNER-MASTER',
+            activatedAt: Date.now(),
+            expiresAt: Date.now() + 365 * 24 * 60 * 60 * 1000,
+            duration: 'lifetime',
+          };
+        }
         if (parsed.tier === 'free' && parsed.email) {
           parsed.usedSearches = getEmailUsedSearches(parsed.email);
         }
@@ -283,13 +299,40 @@ export function App() {
         }
       }
     } catch (err: any) {
-      console.error('Search request error:', err);
-      const customMsg = err?.message;
-      setErrorMessage(
-        customMsg || (isAr 
-          ? 'تعذر إكمال البحث حالياً. يرجى الضغط على زر إعادة المحاولة.'
-          : 'Could not complete the search. Please click Retry.')
-      );
+      const errMsg = String(err?.message || err || '');
+      const isQuotaExhausted =
+        errMsg.includes('انتهت عمليات البحث') ||
+        errMsg.includes('عمليات البحث المجانية') ||
+        errMsg.includes('quota exhausted') ||
+        errMsg.includes('QUOTA_EXHAUSTED') ||
+        errMsg.includes('10/10') ||
+        errMsg.includes('كود اشتراك') ||
+        err?.status === 429;
+
+      if (isQuotaExhausted) {
+        setUserPlan((prev) => ({
+          ...prev,
+          usedSearches: FREE_SEARCH_LIMIT,
+        }));
+        setPendingSearchParams(params);
+        setErrorMessage(
+          isAr
+            ? '⛔ انتهت عمليات البحث المجانية (10/10). يرجى الترقية وتفعيل كود اشتراك للمتابعة.'
+            : '⛔ Free search quota exhausted (10/10). Please upgrade or redeem a license code to continue.'
+        );
+        if (!activePlan.email) {
+          setIsEmailCaptureOpen(true);
+        } else {
+          setIsPricingOpen(true);
+        }
+      } else {
+        console.error('Search request error:', err);
+        setErrorMessage(
+          errMsg || (isAr 
+            ? 'تعذر إكمال البحث حالياً. يرجى الضغط على زر إعادة المحاولة.'
+            : 'Could not complete the search. Please click Retry.')
+        );
+      }
     } finally {
       setIsLoading(false);
     }
@@ -311,7 +354,7 @@ export function App() {
       }
     }
 
-    const isOwner = newEmail === 'gmouhamed36@gmail.com' || newEmail.includes('chahin36');
+    const isOwner = isOwnerEmail(newEmail);
     const usages = getEmailUsedSearches(newEmail);
 
     const updatedPlan: UserPlan = isOwner
@@ -319,9 +362,12 @@ export function App() {
           tier: 'enterprise',
           name: 'Enterprise VIP (Owner)',
           email: cleanEmail,
-          totalFreeLimit: FREE_SEARCH_LIMIT,
+          totalFreeLimit: 999999,
           usedSearches: 0,
           licenseKey: 'OMNI-OWNER-MASTER',
+          activatedAt: Date.now(),
+          expiresAt: Date.now() + 365 * 24 * 60 * 60 * 1000,
+          duration: 'lifetime',
         }
       : {
           ...userPlan,
@@ -330,6 +376,19 @@ export function App() {
         };
 
     setUserPlan(updatedPlan);
+
+    if (isOwner) {
+      fetch(apiUrl('/api/auth/token'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail }),
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.token) setUserToken(data.token);
+        })
+        .catch(() => {});
+    }
 
     // If user has pending search and has quota left, auto-execute with the updated plan!
     if (pendingSearchParams && (isOwner || usages < FREE_SEARCH_LIMIT)) {
