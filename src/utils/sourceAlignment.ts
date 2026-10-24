@@ -55,6 +55,15 @@ const FALSE_VERIFICATION_CLAIMS_EN: Array<{ pattern: RegExp; replacement: string
   },
 ];
 
+export function sanitizeReportText(text: string): string {
+  if (!text || typeof text !== 'string') return '';
+  let clean = text;
+  clean = clean.replace(/\[\s*(?:snippet|content|raw_content|search_result)\s*[:\]][^\n]*\]/gi, '');
+  clean = clean.replace(/(?:Skip to content|Cookie Policy|Accept All Cookies|Navigation Menu|Search results for)[^\n]*/gi, '');
+  clean = clean.replace(/\n{3,}/g, '\n\n');
+  return clean.trim();
+}
+
 export function verifyClaimSourceAlignment(reportText: string, sources: SearchSource[] = []): { alignedText: string; hasUnverifiedClaims: boolean } {
   if (!reportText || typeof reportText !== 'string') {
     return { alignedText: '', hasUnverifiedClaims: false };
@@ -73,12 +82,14 @@ export function verifyClaimSourceAlignment(reportText: string, sources: SearchSo
   const percentageRegex = /(\b\d{1,3}(?:\.\d+)?%)/g;
   const yearRegex = /\b(20[1-3]\d)\b/g;
   const versionRegex = /\b(?:v|version|الإصدار)\s*\d+(?:\.\d+)*\b/gi;
+  const pricingRegex = /(\$\d+(?:\.\d+)?|\b\d+\s*(?:USD|دولار))/gi;
   const paragraphs = reportText.split('\n');
 
   const updatedParagraphs = paragraphs.map(paragraph => {
     const pctMatches = paragraph.match(percentageRegex) || [];
     const yearMatches = paragraph.match(yearRegex) || [];
     const versionMatches = paragraph.match(versionRegex) || [];
+    const pricingMatches = paragraph.match(pricingRegex) || [];
 
     let paragraphSupported = true;
 
@@ -104,10 +115,17 @@ export function verifyClaimSourceAlignment(reportText: string, sources: SearchSo
       }
     }
 
+    for (const pr of pricingMatches) {
+      if (!sourceCorpus.includes(pr.toLowerCase())) {
+        paragraphSupported = false;
+        break;
+      }
+    }
+
     if (!paragraphSupported) {
       hasUnverified = true;
       if (!paragraph.includes('غير متحقق') && !paragraph.includes('Unverified')) {
-        return `${paragraph} [⚠️ ملاحظة توثيقية: هذا الادعاء (الرقمي أو الزمني أو الإصدار) غير مثبت ببيانات المصادر المسترجعة ويعتبر غير متحقق].`;
+        return `${paragraph} [⚠️ ملاحظة توثيقية: هذا الادعاء (الرقمي أو الزمني أو السعري أو الإصدار) غير مثبت ببيانات المصادر المسترجعة ويعتبر غير متحقق].`;
       }
     }
 
@@ -127,7 +145,7 @@ export function alignReportWithSources(
 ): string {
   if (!reportText || typeof reportText !== 'string') return '';
 
-  let cleaned = reportText.trim();
+  let cleaned = sanitizeReportText(reportText);
 
   const disclaimerArabic = `### بيان التوثيق والمراجع
 > **تنبيه الشفافية (حالة غير موثقة):** لم يُرجع مزود البحث روابط خارجية موثقة لهذا الاستعلام في هذه الجلسة (0 مصادر ويب مسترجعة). المعلومات والتحليلات الواردة في هذا التقرير مستخلصة من قاعدة المعرفة الداخلية لنموذج الذكاء الاصطناعي دون مراجع ويب في هذه الجلسة أو ادعاء بإجراء تحقق خارجي.`;

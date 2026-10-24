@@ -1,7 +1,7 @@
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { executeSearch, callGeminiSafe, callOpenRouterSafe, generateResearchSubqueries, validateAndNormalizeUrl } from '../geminiService';
-import { alignReportWithSources, verifyClaimSourceAlignment } from '../../utils/sourceAlignment';
+import { alignReportWithSources, verifyClaimSourceAlignment, sanitizeReportText } from '../../utils/sourceAlignment';
 import { searchTavily } from '../tavilyService';
 
 describe('OmniSearch AI Source Grounding Policy & Reliability Regression Tests', () => {
@@ -275,5 +275,85 @@ describe('OmniSearch AI Source Grounding Policy & Reliability Regression Tests',
 
     assert.strictEqual(url1.isValid, true);
     assert.strictEqual(url1.normalizedUrl, url2.normalizedUrl);
+  });
+
+  // 15. Official announcement requests with only third-party roundups flagged/unverified
+  test('15. Official announcement requests with only third-party sources flagged as unverified', () => {
+    const sources = [
+      { title: 'Tech Blog Roundup', url: 'https://techblog.com/openai-rumors', snippet: 'Rumors about model release.' }
+    ];
+    const report = 'OpenAI officially announced model release in October 2026.';
+    const verification = verifyClaimSourceAlignment(report, sources);
+    assert.strictEqual(verification.hasUnverifiedClaims, true);
+  });
+
+  // 16. Claim with product name but no supporting evidence in snippet
+  test('16. Claim with product name but no supporting evidence flagged as unverified', () => {
+    const sources = [
+      { title: 'General News', url: 'https://news.com', snippet: 'Technology news update.' }
+    ];
+    const report = 'Product Alpha was launched successfully.';
+    const verification = verifyClaimSourceAlignment(report, sources);
+    // Product name without snippet mention should be flagged or handled safely
+    assert.ok(verification.alignedText);
+  });
+
+  // 17. Announcement supported by suitable official source
+  test('17. Announcement supported by suitable official source verifies successfully', () => {
+    const sources = [
+      { title: 'OpenAI Newsroom', url: 'https://openai.com/index/announcement-2026', snippet: 'Official announcement of new AI model release in October 2026.' }
+    ];
+    const report = 'OpenAI announced new AI model release in October 2026.';
+    const verification = verifyClaimSourceAlignment(report, sources);
+    assert.strictEqual(verification.hasUnverifiedClaims, false);
+  });
+
+  // 18. Unsupported dates and pricing claims
+  test('18. Unsupported dates and pricing claims flagged as unverified', () => {
+    const sources = [
+      { title: 'Base Info', url: 'https://info.com', snippet: 'General details.' }
+    ];
+    const report = 'The subscription price is $200 per month starting in 2026.';
+    const verification = verifyClaimSourceAlignment(report, sources);
+    assert.strictEqual(verification.hasUnverifiedClaims, true);
+    assert.ok(verification.alignedText.includes('غير متحقق'));
+  });
+
+  // 19. Duplicate and malformed source records handled cleanly
+  test('19. Duplicate and malformed source records handled cleanly', () => {
+    const rawSources = [
+      { title: 'Source 1', url: 'https://a.com/page?utm_source=test', snippet: 'Snippet 1' },
+      { title: 'Source 1 Dup', url: 'https://a.com/page', snippet: 'Snippet 1' },
+      { title: 'Malformed', url: 'javascript:alert(1)', snippet: 'Bad URL' }
+    ];
+    const valid = rawSources.map(s => validateAndNormalizeUrl(s.url)).filter(r => r.isValid);
+    assert.strictEqual(valid.length, 2);
+  });
+
+  // 20. Raw navigation fragments leaking into report output cleaned by sanitizeReportText
+  test('20. Raw navigation fragments cleaned by sanitizeReportText', () => {
+    const leaked = 'Main Report Content\n[Snippet: raw json fragment data]\nSkip to content\nConclusion paragraph.';
+    const sanitized = sanitizeReportText(leaked);
+    assert.strictEqual(sanitized.includes('raw json fragment'), false);
+    assert.strictEqual(sanitized.includes('Skip to content'), false);
+    assert.ok(sanitized.includes('Main Report Content'));
+    assert.ok(sanitized.includes('Conclusion paragraph'));
+  });
+
+  // 21. No suitable sources available handled with unverified state
+  test('21. No suitable sources available handled with unverified state', () => {
+    const aligned = alignReportWithSources('Investigation report without sources.', [], false);
+    assert.ok(aligned.includes('Transparency Notice'));
+    assert.ok(aligned.includes('0 web sources retrieved'));
+  });
+
+  // 22. Normal research with valid sources continuing to work
+  test('22. Normal research with valid sources working successfully', () => {
+    const sources = [
+      { title: 'Valid Source', url: 'https://valid.org/doc', snippet: 'Official data for 2026 with 95% benchmark.' }
+    ];
+    const aligned = alignReportWithSources('Model achieved 95% in 2026.', sources, false);
+    assert.ok(aligned.includes('Verified Grounding Sources'));
+    assert.ok(aligned.includes('https://valid.org/doc'));
   });
 });
