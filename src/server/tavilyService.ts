@@ -210,15 +210,15 @@ export async function searchTavily(
     const resultsExists = Boolean(data?.results);
     const resultsType = Array.isArray(data?.results) ? 'array' : typeof data?.results;
     const resultsCount = Array.isArray(data?.results) ? data.results.length : 0;
-    const firstResultKeys = resultsCount > 0 && data.results[0] && typeof data.results[0] === 'object' ? Object.keys(data.results[0]) : [];
+    const firstResultKeys = resultsCount > 0 && data?.results?.[0] && typeof data.results[0] === 'object' ? Object.keys(data.results[0]) : [];
 
     let sanitizedFirstSample = null;
-    if (resultsCount > 0 && data.results[0]) {
+    if (resultsCount > 0 && data?.results?.[0]) {
       const item = data.results[0];
       sanitizedFirstSample = {
         title: item.title ? String(item.title).slice(0, 50) : undefined,
         url: item.url ? String(item.url).slice(0, 50) : undefined,
-        hasSnippet: Boolean(item.content || item.snippet),
+        hasSnippet: Boolean(item.content || item.raw_content || (item as any).snippet),
         score: item.score,
       };
     }

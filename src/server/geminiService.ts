@@ -1,6 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 import { SearchSource, ModelResponse, DeepResearchPhase } from '../types';
-import { alignReportWithSources } from '../utils/sourceAlignment';
+import { alignReportWithSources, verifyClaimSourceAlignment } from '../utils/sourceAlignment';
 import { isTavilyConfigured, searchTavily, buildTavilySearchContext } from './tavilyService';
 
 export { alignReportWithSources, verifyClaimSourceAlignment };
