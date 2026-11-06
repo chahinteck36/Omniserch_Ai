@@ -344,6 +344,35 @@ export function generateResearchSubqueries(query: string, isArabic: boolean): st
   return subqueries.slice(0, 3);
 }
 
+export function validateEvidenceEligibility(
+  query: string,
+  sources: SearchSource[]
+): { qualifiedSources: SearchSource[]; primaryOfficialFound: boolean; evidenceNotice: string } {
+  const isOfficialQuery = /official|announcement|release|إعلان|رسمي|صادر/i.test(query);
+  const officialDomains = ['openai.com', 'blog.google', 'anthropic.com', 'deepmind.google', 'microsoft.com', 'apple.com'];
+
+  let primaryOfficialFound = false;
+  const qualifiedSources = sources.map(s => {
+    const isPrimary = officialDomains.some(d => s.url.toLowerCase().includes(d));
+    if (isPrimary) primaryOfficialFound = true;
+    return {
+      ...s,
+      isPrimaryOfficial: isPrimary,
+    };
+  });
+
+  let evidenceNotice = '';
+  if (isOfficialQuery && !primaryOfficialFound && sources.length > 0) {
+    evidenceNotice = 'Note: The user requested official primary sources/announcements, but only secondary or third-party articles were retrieved. Findings from third-party roundups must be clearly identified as secondary and not presented as official confirmation.';
+  }
+
+  return {
+    qualifiedSources,
+    primaryOfficialFound,
+    evidenceNotice,
+  };
+}
+
 /**
  * Extracts citations strictly from genuine groundingMetadata and citationMetadata returned by the Gemini API.
  * Never fabricates or synthesizes fake sources when grounding metadata is absent.
@@ -749,9 +778,14 @@ Strict Report & Grounding Guidelines:
           payload: { sources },
         });
 
+        const eligibility = validateEvidenceEligibility(query, mergedSources);
+        sources = eligibility.qualifiedSources;
+        const noticeSection = eligibility.evidenceNotice ? `\n\nEvidence Notice: ${eligibility.evidenceNotice}\n` : '';
+        const snippetLimitationNotice = '\nNote: Retrieved evidence consists of search snippets and metadata only. Do not claim to have read or analyzed entire webpages. Do not invent page content, technical specs, or quotes not present in the snippets.\n';
+
         const syntheticResult = {
           query,
-          sources: mergedSources,
+          sources,
           answer: combinedAnswer,
           queriesUsed: allQueriesUsed,
           success: true,
@@ -759,14 +793,14 @@ Strict Report & Grounding Guidelines:
 
         const webContext = buildTavilySearchContext(syntheticResult);
         const enrichedPrompt = isArabic
-          ? `استعلام المستخدم: "${query}"${fileContent ? `\nالمستند المرفق (${fileName}):\n${fileContent.slice(0, 6000)}` : ''}\n\n${webContext}\n\nتعليمات صارمة للبحث المعمق (توليف عالي الجودة والأدلة):
+          ? `استعلام المستخدم: "${query}"${fileContent ? `\nالمستند المرفق (${fileName}):\n${fileContent.slice(0, 6000)}` : ''}\n\n${webContext}\n${noticeSection}\n${snippetLimitationNotice}\nتعليمات صارمة للبحث المعمق (توليف عالي الجودة والأدلة):
 1. نظم النتائج منطقياً حسب الأسئلة الفرعية أو الأبعاد التحليلية.
 2. قارن بين المصادر المختلفة مبرزاً نقاط الاتفاق والتكامل وكذلك أي تناقضات أو اختلافات بينها.
 3. ميز بوضوح بين الحقائق المتحققة من المصادر والتقديرات، مع بيان ما يظل غير معروف أو غير مدعوم.
 4. تجنب تكرار النقاط عبر الأقسام المختلفة.
 5. قدم تقريراً مهيكلاً يتضمن: الخلاصة التنفيذية، النتائج الرئيسية (حسب الأبعاد)، الأدلة والمقارنات المدعومة، القيود أو التناقضات، الاستنتاج النهائي، وروابط المصادر المباشرة.
 6. لا تختلق روابط أو إحالات خارج المصادر المسترجعة.`
-          : `User Query: "${query}"${fileContent ? `\nReferenced Document (${fileName}):\n${fileContent.slice(0, 6000)}` : ''}\n\n${webContext}\n\nStrict Instructions for Deep Research (Comprehensive Evidence-Based Synthesis):\n1. Organize evidence logically by subquestions or analytical dimensions.\n2. Compare relevant sources, identifying agreements, complementary insights, and any contradictions.\n3. Clearly distinguish verified facts from model interpretation and state what remains unknown or unsupported.\n4. Avoid repeating the same point across sections.\n5. Structure output into: Executive Summary, Main Findings (organized by subquestion/dimensions), Supporting Evidence & Comparisons, Limitations or Conflicting Evidence, Clear Conclusion, and Direct Source Links.\n6. Do NOT invent URLs or citations outside of the retrieved sources.`;
+          : `User Query: "${query}"${fileContent ? `\nReferenced Document (${fileName}):\n${fileContent.slice(0, 6000)}` : ''}\n\n${webContext}\n${noticeSection}\n${snippetLimitationNotice}\nStrict Instructions for Deep Research (Comprehensive Evidence-Based Synthesis):\n1. Organize evidence logically by subquestions or analytical dimensions.\n2. Compare relevant sources, identifying agreements, complementary insights, and any contradictions.\n3. Clearly distinguish verified facts from model interpretation and state what remains unknown or unsupported.\n4. Avoid repeating the same point across sections.\n5. Structure output into: Executive Summary, Main Findings (organized by subquestion/dimensions), Supporting Evidence & Comparisons, Limitations or Conflicting Evidence, Clear Conclusion, and Direct Source Links.\n6. Do NOT invent URLs or citations outside of the retrieved sources.`;
 
         const groundedGemini = await callGeminiSafe(enrichedPrompt, {
           systemPrompt,

@@ -1,6 +1,6 @@
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { executeSearch, callGeminiSafe, callOpenRouterSafe, generateResearchSubqueries, validateAndNormalizeUrl } from '../geminiService';
+import { executeSearch, callGeminiSafe, callOpenRouterSafe, generateResearchSubqueries, validateAndNormalizeUrl, validateEvidenceEligibility } from '../geminiService';
 import { alignReportWithSources, verifyClaimSourceAlignment, sanitizeReportText } from '../../utils/sourceAlignment';
 import { searchTavily } from '../tavilyService';
 
@@ -355,5 +355,22 @@ describe('OmniSearch AI Source Grounding Policy & Reliability Regression Tests',
     const aligned = alignReportWithSources('Model achieved 95% in 2026.', sources, false);
     assert.ok(aligned.includes('Verified Grounding Sources'));
     assert.ok(aligned.includes('https://valid.org/doc'));
+  });
+
+  // 23. Validate evidence eligibility prioritizes primary official sources and flags secondary-only requests
+  test('23. Validate evidence eligibility flags official requests with only secondary sources', () => {
+    const sources = [
+      { title: 'Tech Roundup', url: 'https://techblog.com/openai-update', snippet: 'Discussion on OpenAI.' }
+    ];
+    const result = validateEvidenceEligibility('Official OpenAI announcement for models', sources);
+    assert.strictEqual(result.primaryOfficialFound, false);
+    assert.ok(result.evidenceNotice.includes('secondary or third-party'));
+  });
+
+  // 24. Multi-dimensional research planning decomposes queries effectively
+  test('24. Multi-dimensional research planning decomposes complex queries', () => {
+    const subqueries = generateResearchSubqueries('Comprehensive technical and market evaluation of AI models in 2026', false);
+    assert.ok(subqueries.length >= 2);
+    assert.ok(subqueries.some(q => q.includes('official updates') || q.includes('comparative analysis')));
   });
 });
