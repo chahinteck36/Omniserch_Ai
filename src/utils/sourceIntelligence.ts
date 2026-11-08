@@ -2,6 +2,7 @@ import { SearchSource } from '../types';
 
 export type SourceType =
   | 'scientific_peer_reviewed'
+  | 'scientific_preprint'
   | 'university_research'
   | 'government_medical'
   | 'academic_books'
@@ -31,7 +32,8 @@ export interface EvaluatedSource extends SearchSource {
 export type ResearchIntent = 'academic' | 'medical' | 'news' | 'general';
 
 const SOURCE_TYPE_LABELS: Record<SourceType, { ar: string; en: string }> = {
-  scientific_peer_reviewed: { ar: 'مصدر علمي محكّم', en: 'Peer-Reviewed Scientific Source' },
+  scientific_peer_reviewed: { ar: 'بحث علمي محكّم ومعتمد', en: 'Peer-Reviewed Scientific Study' },
+  scientific_preprint: { ar: 'بحث أولي غير محكّم (Preprint - ArXiv/SSRN)', en: 'Scientific Preprint (Non-Peer-Reviewed)' },
   university_research: { ar: 'بحث جامعي ومؤسسي', en: 'University & Research Institution' },
   government_medical: { ar: 'مؤسسة حكومية أو طبية رسمية', en: 'Official Government & Medical Institution' },
   academic_books: { ar: 'كتاب أو مرجع أكاديمي', en: 'Academic Book & Reference' },
@@ -53,7 +55,30 @@ export function classifySource(url: string, title: string = '', snippet: string 
     publisherName = 'Unknown Publisher';
   }
 
-  // 1. Scientific Peer-Reviewed
+  // Reject placeholder URLs or dummy domains
+  if (
+    lowerUrl.includes('example.com') ||
+    lowerUrl.includes('placeholder') ||
+    lowerUrl.includes('/test/') ||
+    lowerUrl.includes('sample') ||
+    lowerUrl.includes('localhost')
+  ) {
+    return { sourceType: 'social_or_unspecialized', publisherName: 'Placeholder / Unverified Link', isPrimary: false };
+  }
+
+  // 1. Scientific Preprints (arXiv, SSRN, bioRxiv, medRxiv) - distinct from peer-reviewed
+  if (
+    lowerUrl.includes('arxiv.org') ||
+    lowerUrl.includes('biorxiv.org') ||
+    lowerUrl.includes('medrxiv.org') ||
+    lowerUrl.includes('ssrn.com') ||
+    lowerTitle.includes('preprint') ||
+    lowerSnippet.includes('preprint')
+  ) {
+    return { sourceType: 'scientific_preprint', publisherName: 'arXiv / Preprint Repository', isPrimary: true };
+  }
+
+  // 2. Scientific Peer-Reviewed
   if (
     lowerUrl.includes('pubmed.ncbi.nlm.nih.gov') ||
     lowerUrl.includes('ncbi.nlm.nih.gov/pmc') ||
@@ -67,7 +92,6 @@ export function classifySource(url: string, title: string = '', snippet: string 
     lowerUrl.includes('thelancet.com') ||
     lowerUrl.includes('nejm.org') ||
     lowerUrl.includes('jama.com') ||
-    lowerUrl.includes('arxiv.org') ||
     lowerUrl.includes('plos.org') ||
     lowerTitle.includes('journal of') ||
     lowerTitle.includes('peer-reviewed') ||
@@ -77,7 +101,7 @@ export function classifySource(url: string, title: string = '', snippet: string 
     return { sourceType: 'scientific_peer_reviewed', publisherName, isPrimary: true };
   }
 
-  // 2. University Research (.edu, .ac.uk, etc.)
+  // 3. University Research (.edu, .ac.uk, etc.)
   if (
     lowerUrl.includes('.edu') ||
     lowerUrl.includes('.ac.uk') ||
@@ -93,7 +117,7 @@ export function classifySource(url: string, title: string = '', snippet: string 
     return { sourceType: 'university_research', publisherName, isPrimary: true };
   }
 
-  // 3. Government & Medical Institutions (.gov, who.int, cdc.gov, fda.gov, nih.gov)
+  // 4. Government & Medical Institutions (.gov, who.int, cdc.gov, fda.gov, nih.gov)
   if (
     lowerUrl.includes('.gov') ||
     lowerUrl.includes('who.int') ||
@@ -109,7 +133,7 @@ export function classifySource(url: string, title: string = '', snippet: string 
     return { sourceType: 'government_medical', publisherName, isPrimary: true };
   }
 
-  // 4. Academic Books
+  // 5. Academic Books
   if (
     lowerUrl.includes('books.google') ||
     lowerUrl.includes('archive.org') ||
@@ -121,7 +145,7 @@ export function classifySource(url: string, title: string = '', snippet: string 
     return { sourceType: 'academic_books', publisherName, isPrimary: false };
   }
 
-  // 5. General Educational
+  // 6. General Educational
   if (
     lowerUrl.includes('wikipedia.org') ||
     lowerUrl.includes('britannica.com') ||
@@ -134,7 +158,7 @@ export function classifySource(url: string, title: string = '', snippet: string 
     return { sourceType: 'general_educational', publisherName, isPrimary: false };
   }
 
-  // 6. News Media
+  // 7. News Media
   if (
     lowerUrl.includes('reuters.com') ||
     lowerUrl.includes('apnews.com') ||
@@ -153,7 +177,7 @@ export function classifySource(url: string, title: string = '', snippet: string 
     return { sourceType: 'news_media', publisherName, isPrimary: false };
   }
 
-  // 7. Social or Unspecialized
+  // 8. Social or Unspecialized
   if (
     lowerUrl.includes('twitter.com') ||
     lowerUrl.includes('x.com') ||
@@ -177,11 +201,12 @@ export function evaluateAndRankSources(
 ): EvaluatedSource[] {
   if (!sources || !Array.isArray(sources)) return [];
 
-  // 1. Deduplicate sources by normalized URL
+  // 1. Deduplicate sources by normalized URL & reject placeholders
   const seenUrls = new Set<string>();
   const uniqueSources: SearchSource[] = [];
   for (const s of sources) {
     if (!s.url || typeof s.url !== 'string') continue;
+    if (s.url.includes('example.com') || s.url.includes('placeholder')) continue;
     try {
       const parsed = new URL(s.url);
       const cleanUrl = `${parsed.hostname.toLowerCase()}${parsed.pathname.replace(/\/+$/, '')}`;
@@ -207,6 +232,7 @@ export function evaluateAndRankSources(
     // Base reliability by type (0-100 scale)
     const baseReliabilityMap: Record<SourceType, number> = {
       scientific_peer_reviewed: 95,
+      scientific_preprint: 80,
       university_research: 90,
       government_medical: 90,
       academic_books: 85,
@@ -228,12 +254,8 @@ export function evaluateAndRankSources(
     const authorQualifications = hasAuthorCreds ? 100 : 50;
 
     // Peer review status (0-100 scale)
-    const hasPeerReview =
-      sourceType === 'scientific_peer_reviewed' ||
-      combinedText.includes('peer-reviewed') ||
-      combinedText.includes('محكم') ||
-      combinedText.includes('clinical trial');
-    const peerReviewStatus = hasPeerReview ? 100 : 30;
+    const hasPeerReview = sourceType === 'scientific_peer_reviewed';
+    const peerReviewStatus = hasPeerReview ? 100 : sourceType === 'scientific_preprint' ? 60 : 30;
 
     // Recency check (0-100 scale)
     const yearMatch = combinedText.match(/\b(20[2-6]\d)\b/);
@@ -264,6 +286,11 @@ export function evaluateAndRankSources(
       evidenceSupport * 0.10
     );
 
+    // Strict Rule: Do not grant high quality scores (>75) without sufficient evidence or snippet
+    if (!hasSnippet || !hasEvidence) {
+      qualityScore = Math.min(65, qualityScore);
+    }
+
     // Intent-based boost/penalty
     if (researchIntent === 'academic') {
       if (sourceType === 'scientific_peer_reviewed' || sourceType === 'university_research') qualityScore += 8;
@@ -285,6 +312,8 @@ export function evaluateAndRankSources(
     let reasonForUse = `Selected as a ${getSourceTypeLabel(sourceType, 'en')} with a quality score of ${qualityScore}/100.`;
     if (sourceType === 'scientific_peer_reviewed') {
       reasonForUse = `Provides peer-reviewed scientific evidence and validated research findings (Score: ${qualityScore}).`;
+    } else if (sourceType === 'scientific_preprint') {
+      reasonForUse = `Provides non-peer-reviewed scientific preprint findings (Score: ${qualityScore}).`;
     } else if (sourceType === 'university_research') {
       reasonForUse = `Sourced from authoritative academic and university research work (Score: ${qualityScore}).`;
     } else if (sourceType === 'government_medical') {
@@ -319,8 +348,8 @@ export function evaluateAndRankSources(
   // 3. Sort evaluated sources based on research intent and quality score
   evaluated.sort((a, b) => {
     if (researchIntent === 'academic') {
-      const aPriority = a.sourceType === 'scientific_peer_reviewed' || a.sourceType === 'university_research' ? 2 : a.sourceType === 'academic_books' ? 1 : 0;
-      const bPriority = b.sourceType === 'scientific_peer_reviewed' || b.sourceType === 'university_research' ? 2 : b.sourceType === 'academic_books' ? 1 : 0;
+      const aPriority = a.sourceType === 'scientific_peer_reviewed' ? 3 : a.sourceType === 'university_research' ? 2 : a.sourceType === 'scientific_preprint' ? 1 : 0;
+      const bPriority = b.sourceType === 'scientific_peer_reviewed' ? 3 : b.sourceType === 'university_research' ? 2 : b.sourceType === 'scientific_preprint' ? 1 : 0;
       if (aPriority !== bPriority) return bPriority - aPriority;
     } else if (researchIntent === 'medical') {
       const aPriority = a.sourceType === 'government_medical' || a.sourceType === 'scientific_peer_reviewed' ? 2 : 0;

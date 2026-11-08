@@ -611,15 +611,9 @@ const ALLOWED_CHAT_MODELS = [
 
 apiRouter.post('/chat', standardLimiter, async (req: Request, res: Response) => {
   try {
-    const apiKey = process.env.OPENROUTER_API_KEY || (req.headers['x-openrouter-key'] as string);
-    if (!apiKey) {
-      res.status(500).json({ error: 'OPENROUTER_API_KEY is not configured on the server' });
-      return;
-    }
-
     const { messages, model = 'meta-llama/llama-3.1-8b-instruct:free' } = req.body;
 
-    // Validate Model against strict allowlist
+    // Validate Model against strict allowlist first
     if (!ALLOWED_CHAT_MODELS.includes(model)) {
       res.status(400).json({
         error: 'INVALID_MODEL',
@@ -652,6 +646,12 @@ apiRouter.post('/chat', standardLimiter, async (req: Request, res: Response) => 
         res.status(400).json({ error: 'Message content must be string under 15000 characters' });
         return;
       }
+    }
+
+    const apiKey = process.env.OPENROUTER_API_KEY || (req.headers['x-openrouter-key'] as string);
+    if (!apiKey) {
+      res.status(500).json({ error: 'OPENROUTER_API_KEY is not configured on the server' });
+      return;
     }
 
     const controller = new AbortController();

@@ -105,7 +105,7 @@ describe('Source Intelligence Engine Tests', () => {
     const sources = [
       {
         title: '',
-        url: 'https://example.com/broken',
+        url: 'https://unknown-random-domain-test-12345.org/broken',
         snippet: ''
       }
     ];
