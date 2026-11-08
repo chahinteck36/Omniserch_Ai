@@ -369,3 +369,112 @@ export function evaluateAndRankSources(
 export function getSourceTypeLabel(sourceType: SourceType, lang: 'ar' | 'en' = 'ar'): string {
   return SOURCE_TYPE_LABELS[sourceType]?.[lang] || SOURCE_TYPE_LABELS.general_educational[lang];
 }
+
+export interface SourceAuditBreakdown {
+  retrievedSources: SearchSource[];
+  verifiedSources: EvaluatedSource[];
+  usedSources: EvaluatedSource[];
+  excludedSources: Array<{ source: SearchSource; reason: string }>;
+}
+
+export function evaluateAndRankSourcesWithAudit(
+  sources: SearchSource[],
+  query: string,
+  researchIntent: ResearchIntent = 'general'
+): SourceAuditBreakdown {
+  if (!sources || !Array.isArray(sources)) {
+    return { retrievedSources: [], verifiedSources: [], usedSources: [], excludedSources: [] };
+  }
+
+  const excluded: Array<{ source: SearchSource; reason: string }> = [];
+  const validForEvaluation: SearchSource[] = [];
+  const seenUrls = new Set<string>();
+
+  for (const s of sources) {
+    if (!s.url || typeof s.url !== 'string') {
+      excluded.push({ source: s, reason: 'Invalid or missing URL' });
+      continue;
+    }
+    const lowerUrl = s.url.toLowerCase();
+
+    // Reject placeholders
+    if (
+      lowerUrl.includes('example.com') ||
+      lowerUrl.includes('placeholder') ||
+      lowerUrl.includes('/test/') ||
+      lowerUrl.includes('sample') ||
+      lowerUrl.includes('localhost')
+    ) {
+      excluded.push({ source: s, reason: 'Placeholder or dummy test URL' });
+      continue;
+    }
+
+    // Negative constraints for academic / medical intents (Exclude Wikipedia, YouTube, Social Media, Blogs)
+    if (researchIntent === 'academic' || researchIntent === 'medical') {
+      if (lowerUrl.includes('wikipedia.org')) {
+        excluded.push({ source: s, reason: 'Excluded per negative constraint: Wikipedia is a general encyclopedia, not a primary academic/medical study' });
+        continue;
+      }
+      if (lowerUrl.includes('youtube.com') || lowerUrl.includes('youtu.be')) {
+        excluded.push({ source: s, reason: 'Excluded per negative constraint: Video platforms are not peer-reviewed academic literature' });
+        continue;
+      }
+      if (
+        lowerUrl.includes('facebook.com') ||
+        lowerUrl.includes('instagram.com') ||
+        lowerUrl.includes('twitter.com') ||
+        lowerUrl.includes('tiktok.com') ||
+        lowerUrl.includes('reddit.com') ||
+        lowerUrl.includes('linkedin.com')
+      ) {
+        excluded.push({ source: s, reason: 'Excluded per negative constraint: Social media platforms are unspecialized content' });
+        continue;
+      }
+      if (
+        lowerUrl.includes('medium.com') ||
+        lowerUrl.includes('substack.com') ||
+        lowerUrl.includes('wordpress.com') ||
+        lowerUrl.includes('blogspot.com')
+      ) {
+        excluded.push({ source: s, reason: 'Excluded per negative constraint: Personal publishing and blog platforms lack peer review' });
+        continue;
+      }
+    }
+
+    try {
+      const parsed = new URL(s.url);
+      const cleanUrl = `${parsed.hostname.toLowerCase()}${parsed.pathname.replace(/\/+$/, '')}`;
+      if (seenUrls.has(cleanUrl)) {
+        excluded.push({ source: s, reason: 'Duplicate or syndicated URL' });
+        continue;
+      }
+      seenUrls.add(cleanUrl);
+      validForEvaluation.push(s);
+    } catch {
+      if (seenUrls.has(s.url)) {
+        excluded.push({ source: s, reason: 'Duplicate URL' });
+        continue;
+      }
+      seenUrls.add(s.url);
+      validForEvaluation.push(s);
+    }
+  }
+
+  const evaluated = evaluateAndRankSources(validForEvaluation, query, researchIntent);
+  const verifiedSources: EvaluatedSource[] = [];
+
+  for (const ev of evaluated) {
+    if ((researchIntent === 'academic' || researchIntent === 'medical') && ev.qualityScore < 50) {
+      excluded.push({ source: ev, reason: `Excluded due to low quality score (${ev.qualityScore}/100) below rigorous scholarly/medical threshold` });
+    } else {
+      verifiedSources.push(ev);
+    }
+  }
+
+  return {
+    retrievedSources: sources,
+    verifiedSources,
+    usedSources: verifiedSources.slice(0, 6),
+    excludedSources: excluded,
+  };
+}
